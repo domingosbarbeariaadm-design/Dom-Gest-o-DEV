@@ -54,3 +54,9 @@
 .menu .menuGroupTitle{color:var(--gold);font-size:12px;font-weight:900;margin:12px 0 4px;padding-left:10px;text-transform:uppercase;letter-spacing:.04em}
 
 .footer{border-top:1px solid var(--line);padding:12px 0;color:var(--muted);text-align:center;margin-top:20px;font-size:12px}
+
+.syncStatus{display:inline-block;margin-right:8px;padding:6px 10px;border-radius:999px;font-size:12px;font-weight:700;background:#2a2a2a;color:#ddd;vertical-align:middle}
+.syncStatus.synced{background:rgba(53,194,107,.18);color:#8ef0b8}
+.syncStatus.saving{background:rgba(76,141,242,.2);color:#9cc4ff}
+.syncStatus.local{background:rgba(255,193,7,.18);color:#ffd86e}
+.syncStatus.error{background:rgba(215,61,73,.18);color:#ff9aa3}
