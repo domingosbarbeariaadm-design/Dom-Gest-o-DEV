@@ -1,0 +1,667 @@
+let selectedClient=null;
+const KEY='domingos_v17_corrigido_faltantes';const OLD=['domingos_v16_correcao_uso_real','domingos_v15_escopo_completo','domingos_v14_corrigido','domingos_v13_final','domingos_v12_update','domingos_v11_corrigido_ok'];function id(){return Date.now().toString(36)+Math.random().toString(36).slice(2)}function hours(){return{0:{open:false,start:'08:00',end:'12:00',lunch:'',lunchDuration:60},1:{open:true,start:'08:00',end:'20:00',lunch:'12:00',lunchDuration:60},2:{open:true,start:'08:00',end:'20:00',lunch:'12:00',lunchDuration:60},3:{open:true,start:'08:00',end:'20:00',lunch:'12:00',lunchDuration:60},4:{open:true,start:'08:00',end:'20:00',lunch:'12:00',lunchDuration:60},5:{open:true,start:'08:00',end:'20:00',lunch:'12:00',lunchDuration:60},6:{open:true,start:'08:00',end:'18:00',lunch:'12:00',lunchDuration:60}}}function msgDefault(){return{birthday:'Olá {cliente}, feliz aniversário!',schedule:'Olá {cliente}, seu horário foi agendado para {data} às {hora}, para {servicos}.',confirm:'Olá {cliente}, confirmando seu horário: {data} às {hora}.',reminder:'Olá {cliente}, lembrando do seu horário às {hora}.',charge:'Olá {cliente}, consta em aberto {valor}. Pendências: {historico}',promo:'Olá {cliente}, temos novidades na Domingos Barbearia!'}}function seed(){return{biz:{name:'Domingos Barbearia',owner:'Eduardo Dudu',phone:'',cnpj:'',address:'',logo:'',hours:hours(),messages:msgDefault()},users:[{id:id(),name:'Eduardo Dudu',role:'Administrador + Barbeiro',pass:'1234'}],clients:[],services:[{id:id(),name:'Corte',value:45,duration:40,loyalty:true,color:'#f2c94c'},{id:id(),name:'Barba',value:40,duration:30,loyalty:false,color:'#4c8df2'},{id:id(),name:'Combo',value:80,duration:70,loyalty:true,color:'#35c26b'},{id:id(),name:'Sobrancelha',value:15,duration:15,loyalty:false,color:'#d73d49'},{id:id(),name:'Pezinho',value:10,duration:10,loyalty:false,color:'#8c5d10'}],products:[],appointments:[],cash:[],receivables:[],payables:[],plans:[],subs:[],sales:[],internalUses:[],discountTypes:[],paymentFees:{Pix:0,Dinheiro:0,Debito:1.99,Credito:3.99},blocks:[]}}function loadDB(){let r=localStorage.getItem(KEY);if(r)return JSON.parse(r);for(let k of OLD){let o=localStorage.getItem(k);if(o){let d=JSON.parse(o);localStorage.setItem(KEY,JSON.stringify(d));return d}}return null}let db=loadDB()||seed(),current='agenda',last='agenda',weekOff=0,recFilter='todos',payFilter='todos',planTemp=[],priceItems=[{name:'Produto/insumo',cost:3}];const $=x=>document.getElementById(x),money=v=>Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}),today=()=>new Date().toISOString().slice(0,10),num=v=>Number(String(v||0).replace(',','.'));function brDate(d){if(!d)return '';let p=String(d).split('-');return p.length==3?p[2]+'/'+p[1]+'/'+p[0]:d}function servicesText(a){return a&&a.service?a.service:'serviço agendado'}
+function nextOrderNo(){let y=new Date().getFullYear();let nums=(db.orders||[]).map(o=>String(o.number||'')).filter(n=>n.startsWith('CMD-'+y+'-')).map(n=>Number(n.split('-').pop())).filter(Boolean);let n=(nums.length?Math.max(...nums):0)+1;return 'CMD-'+y+'-'+String(n).padStart(4,'0')}
+function orderItemsHtml(items){return (items||[]).map(i=>i.name+' x'+(i.qty||1)+' - '+money(i.total||i.value||0)).join(' • ')}
+function orderByNo(no){return (db.orders||[]).find(o=>o.number==no)}
+function paymentOptions(){return [{v:'Dinheiro',t:'Dinheiro'},{v:'Pix',t:'PIX'},{v:'Debito',t:'Cartão de débito'},{v:'Credito',t:'Cartão de crédito'},{v:'Crediario',t:'Crediário'}]}
+function payLabel(p){return p=='Debito'?'Cartão de débito':p=='Credito'?'Cartão de crédito':p=='Crediario'?'Crediário':p=='Pix'?'PIX':p}
+function feeRate(pay){return Number((db.paymentFees||{})[pay]||0)}
+function feeValue(gross,pay){return Number(gross||0)*feeRate(pay)/100}
+function netValue(gross,pay){return Math.max(0,Number(gross||0)-feeValue(gross,pay))}
+function discountOptions(){return (db.discountTypes||[]).map(d=>({v:d.id,t:d.name+' - '+(d.type=='percent'?d.value+'%':money(d.value))}))}
+function calcDiscount(base,typeId,manualValue,manualPercent){let total=0,desc=[];let d=(db.discountTypes||[]).find(x=>x.id==typeId);if(d&&Number(d.value)>0){let v=d.type=='percent'?Number(base||0)*Number(d.value)/100:Number(d.value);total+=v;desc.push(d.name)}let mv=Number(manualValue||0),mp=Number(manualPercent||0);if(mv>0){total+=mv;desc.push('Desconto manual R$')}if(mp>0){total+=Number(base||0)*mp/100;desc.push('Desconto manual %')}total=Math.min(Number(base||0),total);return {value:total,desc:desc.join(' + ')}}
+function addDaysISO(date,days){let d=new Date(date+'T00:00:00');d.setDate(d.getDate()+Number(days||0));return d.toISOString().slice(0,10)}
+function registerInternalExpense(product,qty,obs){let cost=Number(product.cost||0)*Number(qty||0);db.internalUses.push({id:id(),productId:product.id,product:product.name,qty:Number(qty||0),cost,date:today(),obs:obs||'Uso interno na bancada'});db.cash.push({id:id(),type:'saida',desc:'Uso interno - '+product.name,value:cost,date:today(),pay:'Estoque/uso',locked:true,category:'uso_interno'});return cost}
+
+function empresaNome(){return (db.config&&db.config.name)||'Domingos Barbearia'}
+function empresaContato(){return (db.biz&&db.biz.phone)||''}
+function empresaDados(){return [db.biz?.address,db.biz?.cnpj&&('CNPJ '+db.biz.cnpj),db.biz?.phone&&('Tel. '+db.biz.phone)].filter(Boolean).join(' • ')}
+function logoImpressao(){return db.biz&&db.biz.printLogo?db.biz.printLogo:db.biz.logo}
+function documentWindow(title,body){
+  const html=`<!doctype html><html><head><meta charset="utf-8"><title>DOMINGOSBARBEARIA - ${title}</title>
+  <style>
+  body{font-family:Arial,sans-serif;margin:24px;color:#111}
+  .doc{max-width:760px;margin:auto;border:1px solid #ddd;padding:24px;border-radius:12px}
+  h1{margin:0 0 6px;font-size:24px}.muted{color:#666;font-size:13px}
+  table{width:100%;border-collapse:collapse;margin-top:16px}td,th{border-bottom:1px solid #ddd;padding:10px;text-align:left}
+  .total{text-align:right;font-size:20px;font-weight:bold;margin-top:18px}
+  .actions{margin:18px auto;max-width:760px;display:flex;gap:10px}
+  button{padding:12px 16px;border:0;border-radius:8px;background:#111;color:#fff;font-weight:bold}
+  @media print{.actions{display:none}.doc{border:0}}
+  </style></head><body>
+  <div class="actions"><button onclick="window.print()">Imprimir / Salvar em PDF</button><button onclick="window.close()">Fechar</button></div>
+  <div class="doc">${logoImpressao()?`<img class='printLogo' src='${logoImpressao()}'><br>`:''}<h2 style='margin:8px 0 4px'>${empresaNome()}</h2><div class='muted'>${empresaDados()}</div><hr>${body}</div></body></html>`;
+  const w=window.open('','_blank');w.document.write(html);w.document.close();
+}
+function printOrder(no){
+  const o=orderByNo(no); if(!o)return alert('Comanda não encontrada');
+  const rows=(o.items||[]).map(i=>`<tr><td>${i.name}</td><td>${i.qty||1}</td><td>${money(i.value||0)}</td><td>${money(i.total||0)}</td></tr>`).join('');
+  documentWindow('Comanda '+o.number,`
+    <h2>Comanda ${o.number}</h2>
+    <p><b>Cliente:</b> ${o.client}<br><b>Data:</b> ${brDate(o.date)}<br><b>Vencimento:</b> ${brDate(o.due)}<br><b>Status:</b> ${o.status||'aberta'}</p>
+    <table><thead><tr><th>Item</th><th>Qtd.</th><th>Valor</th><th>Total</th></tr></thead><tbody>${rows}</tbody></table>
+    ${o.discountValue?`<p><b>Desconto:</b> ${money(o.discountValue)} ${o.discountDesc||''}</p>`:''}<div class="total">Total: ${money(o.total||0)}</div>
+    <p class="muted">${o.obs||''}</p>
+  `);
+}
+function printReceipt(receivableId,paymentIndex){
+  const r=db.receivables.find(x=>x.id==receivableId); if(!r)return alert('Recebimento não encontrado');
+  const p=(r.payments||[])[paymentIndex]; if(!p)return alert('Pagamento não encontrado');
+  documentWindow('Recibo '+(r.orderNo||r.id),`
+    <h2>Recibo de Pagamento</h2>
+    <p><b>Cliente:</b> ${r.client}<br><b>Comanda:</b> ${r.orderNo||'-'}<br><b>Data do pagamento:</b> ${brDate(p.date)}<br><b>Descrição:</b> ${r.desc}</p>
+    <div class="total">Valor recebido: ${money(p.value||0)}</div><p><b>Forma:</b> ${payLabel(p.pay||'')}<br><b>Taxa:</b> ${money(p.fee||0)}<br><b>Líquido no caixa:</b> ${money(p.net||p.value||0)}</p>
+    <p><b>Saldo restante:</b> ${money(r.balance||0)}</p>
+    <br><br><p>Assinatura: ___________________________________</p>
+  `);
+}
+function printCashEntry(cashId){
+  const c=db.cash.find(x=>x.id==cashId); if(!c)return alert('Lançamento não encontrado');
+  documentWindow('Lançamento de Caixa',`
+    <h2>Lançamento de Caixa</h2>
+    <p><b>Tipo:</b> ${c.type}<br><b>Data:</b> ${brDate(c.date)}<br><b>Comanda:</b> ${c.orderNo||'-'}<br><b>Descrição:</b> ${c.desc}</p>
+    <div class="total">Valor: ${money(c.value||0)}</div>
+  `);
+}
+
+function deleteProductSale(saleId){
+  let sale=db.sales.find(x=>x.id==saleId); if(!sale)return;
+  if(!confirm('Excluir esta venda de produto? Se já estiver em comanda finalizada, será necessário senha.'))return;
+  let linkedOrder=(db.orders||[]).find(o=>(o.items||[]).some(i=>i.productId==sale.productId&&o.number==sale.orderNo));
+  if(linkedOrder && !securityOk())return alert('Operação cancelada.');
+  db.sales=db.sales.filter(x=>x.id!=saleId);
+  let p=db.products.find(x=>x.id==sale.productId); if(p)p.stock=Number(p.stock||0)+Number(sale.qty||0);
+  if(linkedOrder){
+    linkedOrder.items=(linkedOrder.items||[]).filter(i=>!(i.productId==sale.productId&&i.name==sale.product));
+    linkedOrder.total=Math.max(0,Number(linkedOrder.total||0)-Number(sale.total||0));
+    linkedOrder.balance=Math.max(0,Number(linkedOrder.balance||0)-Number(sale.total||0));
+    let r=db.receivables.find(x=>x.orderNo==sale.orderNo);
+    if(r && !r.paid){
+      r.orderItems=linkedOrder.items;
+      r.originalValue=Math.max(0,Number(r.originalValue||0)-Number(sale.total||0));
+      r.balance=Math.max(0,Number(r.balance||0)-Number(sale.total||0));
+      r.value=r.balance;
+    }
+  }
+  save();render();alert('Venda de produto excluída.');
+}
+
+function securityOk(){
+  const pass=prompt('Digite a senha de segurança para alterar lançamento finalizado:');
+  return pass===String((db.security&&db.security.password)||'1234');
+}
+function askDeletePassword(){const pass=prompt('Digite a senha de 4 dígitos para excluir:');return /^\d{4}$/.test(String(pass||''))&&pass===String((db.security&&db.security.password)||'1234')}function setSecurityPassword(){
+  const atual=prompt('Senha atual:');
+  if(atual!==String((db.security&&db.security.password)||'1234'))return alert('Senha incorreta.');
+  const nova=prompt('Nova senha:');
+  if(!nova)return;
+  db.security.password=nova;save();alert('Senha alterada.');
+}
+function normalize(){db.clients=(db.clients||[]).map(c=>({nickname:'',...c}));if(!db.biz)db.biz=seed().biz;if(!db.biz.hours)db.biz.hours=hours();if(!db.biz.messages)db.biz.messages=msgDefault();if(!db.biz.logo)db.biz.logo='';if(!db.biz.printLogo)db.biz.printLogo='';['clients','services','products','appointments','cash','receivables','payables','plans','subs','sales','orders','internalUses','discountTypes','blocks','users','security'].forEach(k=>{if(!db[k])db[k]=[]});if(!db.security)db.security={password:'1234'};if(!db.paymentFees)db.paymentFees={Pix:0,Dinheiro:0,Debito:1.99,Credito:3.99,Crediario:0};if(db.paymentFees.Crediario===undefined)db.paymentFees.Crediario=0;if(!db.creditConfig)db.creditConfig={weeklyDays:7,biweeklyDays:15,monthlyDays:30,cardFeeEnabled:false,clientLimitEnabled:false,defaultClientLimit:0,blockDefaulters:false};if(!db.discountTypes||!db.discountTypes.length)db.discountTypes=[{id:id(),name:'Sem desconto',type:'valor',value:0},{id:id(),name:'Pai e Filho',type:'valor',value:10},{id:id(),name:'Cabelo + Barba',type:'valor',value:5},{id:id(),name:'Cliente fiel',type:'percent',value:5}];if(!db.internalUses)db.internalUses=[];if(!db.users.length)db.users=seed().users;db.clients.forEach(c=>{if(c.loyalty===undefined)c.loyalty=0;if(c.loyaltyGoal===undefined)c.loyaltyGoal=10;if(!c.loyaltyOrigin)c.loyaltyOrigin='sistema';if(!c.loyaltyHistory)c.loyaltyHistory=[];if(c.visits===undefined)c.visits=0});db.receivables.forEach(r=>{if(r.originalValue===undefined)r.originalValue=Number(r.value||0)+Number(r.paidValue||0);if(r.balance===undefined)r.balance=r.paid?0:Number(r.value||0);if(!r.payments)r.payments=[];if(r.paidValue&&!r.payments.length)r.payments.push({date:today(),value:Number(r.paidValue||0),obs:'Importado do saldo parcial'});});db.plans.forEach(p=>{if(!p.items){p.items=[];if(p.cuts)p.items.push({serviceName:'Corte',qty:p.cuts});if(p.beards)p.items.push({serviceName:'Barba',qty:p.beards})}});localStorage.setItem(KEY,JSON.stringify(db))}normalize();function save(){localStorage.setItem(KEY,JSON.stringify(db));render()}
+const MENU=[
+['agenda','📅 Agenda'],
+['inicio','🏠 Dashboard'],
+['cadastros','📁 Cadastros'],
+['financeiroGeral','🏦 Financeiro'],
+['configuracoesGeral','⚙️ Configurações'],
+['outros','📌 Outros'],
+['clientes','👤 Clientes'],
+['produtos','🧴 Produtos'],
+['servicos','✂️ Serviços'],
+['vendas','🧾 Vendas'],
+['receber','💰 A receber'],
+['pagar','📤 A pagar'],
+['financeiro','🏦 Caixa'],
+['planos','📦 Planos'],
+['whatsapp','💬 WhatsApp'],
+['backup','💾 Backup']
+];
+document.getElementById('menu').innerHTML=
+'<div class="menuGroupTitle">Principal</div>'+
+MENU.slice(0,6).map((m,i)=>`<button class="${i==0?'active':''}" onclick="nav('${m[0]}',this)">${m[1]}</button>`).join('')+
+'<div class="menuGroupTitle">Atalhos</div>'+
+MENU.slice(6).map(m=>`<button onclick="nav('${m[0]}',this)">${m[1]}</button>`).join('');
+function toggleValoresDashboardModelo(){
+  document.body.classList.toggle('valueHidden');
+  localStorage.setItem('domingos_valores_ocultos',document.body.classList.contains('valueHidden')?'1':'0');
+}
+if(localStorage.getItem('domingos_valores_ocultos')==='1'){document.body.classList.add('valueHidden')}
+
+function nav(s,btn){last=current;current=s;document.querySelectorAll('.screen').forEach(x=>x.classList.remove('active'));$(s).classList.add('active');document.querySelectorAll('.menu button').forEach(x=>x.classList.remove('active'));if(btn)btn.classList.add('active');$('title').innerText=(MENU.find(m=>m[0]==s)||['','Editor'])[1].replace(/^[^ ]+ /,'');render()}function f(l,i,t='text',v=''){return `<div class="field"><label>${l}</label><input id="${i}" type="${t}" value="${v??''}"></div>`}function area(l,i,v=''){return `<div class="field"><label>${l}</label><textarea id="${i}">${v??''}</textarea></div>`}function sel(l,i,opts,v=''){return `<div class="field"><label>${l}</label><select id="${i}">${opts.map(o=>`<option value="${o.v}" ${o.v==v?'selected':''}>${o.t}</option>`).join('')}</select></div>`}
+function txt(v){return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')}function val(id){let el=$(id);return el?txt(el.value):''}function matchClient(c,q){if(!q)return true;return txt([c.name,c.nickname,c.phone,c.cpf,c.obs,c.loyaltyOrigin].join(' ')).includes(q)}function matchService(s,q){if(!q)return true;return txt([s.name,s.value,s.duration,s.loyalty?'fidelidade':''].join(' ')).includes(q)}function matchProduct(p,q){if(!q)return true;return txt([p.name,p.type,p.cost,p.value,p.stock,p.min,p.commission].join(' ')).includes(q)}function edit(t,d={}){last=current;nav('editor');let title='',b='';if(t=='client'){title=d.id?'Cadastro do cliente':'Novo cliente';b=f('Nome','eName','text',d.name)+f('Apelido','eNick','text',d.nickname||'')+f('Telefone','ePhone','text',d.phone)+f('CPF','eCpf','text',d.cpf)+f('Nascimento','eBirth','date',d.birth)+`<div class="grid2">${f('Pontos de fidelidade atuais','eLoyalty','number',d.loyalty||0)}${f('Total para benefício','eLoyaltyGoal','number',d.loyaltyGoal||10)}</div>`+sel('Origem da fidelidade','eLoyaltyOrigin',[{v:'sistema',t:'Sistema'},{v:'cartao_fisico',t:'Veio do cartão físico'}],d.loyaltyOrigin||'sistema')+area('Observações','eObs',d.obs)+`<button class="btn" onclick="saveClient('${d.id||''}')">Salvar</button>`+(d.id?`<button class="btn light" onclick="adjustLoyaltyPrompt('${d.id}')">Ajustar pontos</button><button class="btn light" onclick="sendLoyalty('${d.id}')">WhatsApp fidelidade</button><hr><h3>Histórico</h3>${clientHistory(d.id)}`:'')}if(t=='service'){title=d.id?'Alterar serviço':'Novo serviço';b=f('Nome','eName','text',d.name)+f('Valor','eValue','text',d.value)+f('Duração min','eDur','number',d.duration||30)+f('Cor agenda','eColor','color',d.color||'#f2c94c')+sel('Fidelidade','eLoy',[{v:'sim',t:'Conta'},{v:'nao',t:'Não conta'}],d.loyalty?'sim':'nao')+`<button class="btn" onclick="saveService('${d.id||''}')">Salvar</button>`}if(t=='product'){title=d.id?'Alterar produto':'Novo produto';b=f('Nome','eName','text',d.name)+sel('Tipo','eType',[{v:'ambos',t:'Venda e uso interno'},{v:'venda',t:'Somente venda'},{v:'uso',t:'Somente uso interno'}],d.type||'ambos')+f('Custo','eCost','text',d.cost)+f('Venda','eValue','text',d.value)+f('Estoque','eStock','number',d.stock)+f('Estoque mínimo','eMin','number',d.min)+f('Comissão %','eCom','text',d.commission)+`<button class="btn" onclick="saveProduct('${d.id||''}')">Salvar</button>`}if(t=='ag'){title='Agendamento';b=`<div class="field"><label>Pesquisar cliente</label><div style="display:flex;gap:8px;align-items:center"><input id="eClientSearch" type="text" value="" placeholder="Digite nome, apelido ou telefone"><button class="btn light" type="button" onclick="confirmAgClientSearch();return false">OK</button></div><input id="eClient" type="hidden" value="${d.clientId||''}"><select id="eClientFallback" onchange="selectAgClient(this.value)" style="margin-top:8px"><option value="">Selecione também por lista</option>${db.clients.map(c=>`<option value="${c.id}" ${c.id==d.clientId?'selected':''}>${c.name}${c.nickname?' ('+c.nickname+')':''} ${c.phone?' - '+c.phone:''}</option>`).join('')}</select><div id="agClientSelected"></div><div id="agClientResults" class="client-list"></div></div>`+sel('Serviço 1','eService',db.services.map(s=>({v:s.id,t:s.name+' - '+money(s.value)+' • '+(s.duration||30)+'min'})),d.serviceId)+sel('Serviço 2 opcional','eService2',[{v:'',t:'Nenhum'}].concat(db.services.map(s=>({v:s.id,t:s.name+' - '+money(s.value)+' • '+(s.duration||30)+'min'}))),d.service2Id)+sel('Plano opcional','eSub',[{v:'',t:'Não usar plano'}].concat(db.subs.map(s=>({v:s.id,t:s.client+' - '+s.plan}))),d.subId)+f('Data','eDate','date',d.date||today())+f('Hora','eTime','time',d.time)+f('Valor bruto','eValue','text',d.value)+sel('Desconto pré-definido','eDiscountType',[{v:'',t:'Sem desconto'}].concat(discountOptions()),d.discountType||'')+`<div class="grid2">${f('Desconto manual R$','eDiscountValue','text',d.discountValue||0)}${f('Desconto manual %','eDiscountPercent','text',d.discountPercent||0)}</div><div class="field" style="border:1px solid rgba(214,163,58,.35);border-radius:14px;padding:12px;background:rgba(214,163,58,.06)">
+<label>Agendamento recorrente</label>
+<label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="eRecActive" style="width:auto"> Cliente deixa programado</label>
+<div class="grid2">
+  <div class="field"><label>Repetir a cada</label><input id="eRecInterval" type="number" min="1" value="1"></div>
+  <div class="field"><label>Tipo</label><select id="eRecType"><option value="semana">Semana(s)</option><option value="dia">Dia(s)</option></select></div>
+</div>
+<div class="field"><label>Quantidade total de agendamentos</label><input id="eRecCount" type="number" min="1" value="1"></div>
+<p class="small">Exemplo: João, a cada 2 semanas, repetir 5 vezes no mesmo dia e horário.</p>
+</div><div class="field"><label>Tempo ocupado na agenda</label><div id="agDurationPreview" style="font-size:18px;font-weight:900;color:var(--gold);padding:7px 0">0 min</div><div class="small">O horário será bloqueado automaticamente conforme a soma dos serviços.</div></div>`+sel('Status','eStatus',[{v:'pendente',t:'Pendente'},{v:'confirmado',t:'Confirmado'},{v:'finalizado',t:'Finalizado'},{v:'cancelado',t:'Cancelado'},{v:'faltou',t:'Faltou'}],d.status||'pendente')+area('Observações','eObs',d.obs)+`<button class="btn" onclick="saveAg('${d.id||''}')">Salvar</button>${d.id?`<button class="btn red" onclick="deleteAppointment('${d.id}')">Excluir agendamento</button>`:''}`}if(t=='finish'){title='Concluir atendimento e gerar comanda';b=`<p><b>${d.client}</b><br>${d.service} • ${money(d.value)}</p><p class="small">Aqui o barbeiro apenas conclui o atendimento, acrescenta produto se tiver e gera a comanda. O pagamento será controlado no Contas a Receber.</p>`+sel('Produto vendido junto','eProduct',[{v:'',t:'Nenhum'}].concat(db.products.filter(p=>p.type!='uso').map(p=>({v:p.id,t:p.name+' - '+money(p.value)}))))+f('Quantidade produto','eQty','number',1)+f('Vencimento da comanda','eDue','date',today())+area('Observação da comanda','eOrderObs','')+`<button class="btn green" onclick="finishWithProduct('${d.id}')">Gerar comanda</button>`}if(t=='sale'){title='Venda rápida';b=sel('Produto','eProduct',db.products.filter(p=>p.type!='uso').map(p=>({v:p.id,t:p.name+' - '+money(p.value)})))+sel('Cliente','eClient',[{v:'',t:'Sem cliente'}].concat(db.clients.map(c=>({v:c.id,t:c.name}))))+f('Quantidade','eQty','number',1)+sel('Forma','ePay',paymentOptions().concat([{v:'Pendente',t:'Pendente'}]))+`<button class="btn" onclick="saveSale()">Salvar venda</button>`}if(t=='internalUse'){title='Registrar uso interno / bancada';b=sel('Produto','eProduct',db.products.map(p=>({v:p.id,t:p.name+' • custo '+money(p.cost)+' • estoque '+(p.stock||0)})))+f('Quantidade usada','eQty','number',1)+area('Observação','eObs','Uso na bancada')+`<button class="btn" onclick="saveInternalUse()">Registrar uso</button>`}if(t=='financeConfig'){title='Taxas e descontos';b=`<h3>Taxas por forma de pagamento</h3>`+f('Taxa Pix %','feePix','text',(db.paymentFees&&db.paymentFees.Pix)||0)+f('Taxa Dinheiro %','feeDinheiro','text',(db.paymentFees&&db.paymentFees.Dinheiro)||0)+f('Taxa Débito %','feeDebito','text',(db.paymentFees&&db.paymentFees.Debito)||0)+f('Taxa Crédito %','feeCredito','text',(db.paymentFees&&db.paymentFees.Credito)||0)+`<h3>Descontos pré-definidos</h3><p class="small">Exemplos: Pai e Filho, Cabelo + Barba, Cliente fiel. Você pode editar os valores aqui.</p><div id="discountConfigList"></div><button class="btn light" onclick="addDiscountType()">+ Desconto</button><button class="btn" onclick="saveFinanceConfig()">Salvar</button>`}if(t=='plan'){title='Plano';planTemp=JSON.parse(JSON.stringify(d.items||[]));b=f('Nome','eName','text',d.name)+f('Valor','eValue','text',d.value)+f('Validade dias','eDays','number',d.days||30)+sel('Recorrência','eRec',[{v:'sim',t:'Sim'},{v:'nao',t:'Não'}],d.rec?'sim':'nao')+`<div class="field"><label>Adicionar serviço</label><select id="planService">${db.services.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select><input id="planQty" type="number" value="1"><button class="btn" onclick="addPlanItem()">Adicionar</button><div id="planItems"></div></div><button class="btn" onclick="savePlan('${d.id||''}')">Salvar plano</button>`}if(t=='planAdjust'){title='Ajustar/Importar plano';b=sel('Cliente','eClient',db.clients.map(c=>({v:c.id,t:c.name})),d.clientId||'')+f('Nome do plano','ePlanName','text',d.plan||'')+f('Data de início','eStart','date',d.start||today())+f('Vencimento','eEnd','date',d.end||today())+f('Quantidade total','eQtyTotal','number',d.qtyTotal||0)+f('Quantidade usada','eQtyUsed','number',d.qtyUsed||0)+f('Quantidade restante','eQtyRemain','number',d.qtyRemain||0)+area('Observação','eObs',d.obs||'Importado de outro sistema')+`<button class="btn" onclick="savePlanAdjustment('${d.id||''}')">Salvar ajuste</button>`}if(t=='sellPlan'){title='Vender plano';b=sel('Cliente','eClient',db.clients.map(c=>({v:c.id,t:c.name})))+sel('Plano','ePlan',db.plans.map(p=>({v:p.id,t:p.name+' - '+money(p.value)})))+f('Valor','eValue','text','')+sel('Forma','ePay',paymentOptions())+f('Data de início','eStart','date',today())+f('Vencimento','eEnd','date',today())+f('Quantidade incluída','eQtyTotal','number',0)+area('Observação','eObs','')+`<button class="btn" onclick="sellPlan()">Vender</button>`}if(t=='cash'){title='Caixa';b=sel('Tipo','eType',[{v:'entrada',t:'Entrada'},{v:'saida',t:'Saída'}])+f('Descrição','eDesc')+f('Valor','eValue')+sel('Forma','ePay',paymentOptions())+`<button class="btn" onclick="saveCash()">Salvar</button>`}if(t=='cashEdit'){title='Editar lançamento';b=sel('Tipo','eType',[{v:'entrada',t:'Entrada'},{v:'saida',t:'Saída'}],d.type)+f('Descrição','eDesc','text',d.desc)+f('Valor','eValue','text',d.value)+sel('Forma','ePay',paymentOptions(),d.pay)+`<button class="btn" onclick="updateCash('${d.id}')">Salvar alteração</button>`}if(t=='receivable'){title='Conta a receber';b=sel('Cliente','eClient',db.clients.map(c=>({v:c.id,t:c.name})))+f('Descrição','eDesc','text','Valor em aberto')+f('Valor','eValue','text')+sel('Forma de pagamento','ePay',paymentOptions(),'Crediario')+sel('Periodicidade do crediário','eCreditTerm',[{v:'semanal',t:'Semanal'},{v:'quinzenal',t:'Quinzenal'},{v:'mensal',t:'Mensal'}],'mensal')+f('Vencimento','eDue','date',today())+`<button class="btn" onclick="saveReceivable()">Salvar</button>`}if(t=='payable'){title='Conta a pagar';b=f('Descrição','eDesc','text','Aluguel / Água / Luz / Fornecedor')+f('Fornecedor','eSupplier')+f('Valor','eValue')+f('Vencimento','eDue','date',today())+sel('Status','eStatus',[{v:'aberta',t:'Aberta'},{v:'paga',t:'Paga'}])+`<button class="btn" onclick="savePayable()">Salvar</button>`}if(t=='import'){title='Importar clientes';b='<p class="small">Formato: Nome,Telefone,CPF,Nascimento. Aceita CSV/TXT, vírgula, ponto e vírgula ou TAB.</p><div class="field"><label>Arquivo CSV/TXT</label><input type="file" id="csvFile" accept=".csv,.txt,text/csv,text/plain"></div><button class="btn" onclick="importCsvFileManual()">Importar arquivo</button><button class="btn light" onclick="downloadCsvModel()">Baixar modelo</button>'+area('Ou cole a lista','eCsv')+`<button class="btn" onclick="importCsv()">Importar texto</button>`}if(t=='logo'){title='Logo e marca d\'água';b='<div class="field"><label>Logo</label><input type="file" accept="image/*" onchange="loadLogo(event)"></div><button class="btn red" onclick="removeLogo()">Remover logo</button><div id="logoPrev"></div>'}if(t=='biz'){title='Dados';b=f('Nome fantasia','eName','text',db.biz.name)+f('Responsável','eOwner','text',db.biz.owner)+f('Telefone','ePhone','text',db.biz.phone)+f('CNPJ','eCnpj','text',db.biz.cnpj)+f('Endereço','eAddr','text',db.biz.address)+`<button class="btn" onclick="saveBiz()">Salvar</button>`}if(t=='hours'){title='Horários';b=weekHtml()+`<button class="btn" onclick="saveHours()">Salvar</button>`}if(t=='block'){title='Bloqueio';b=f('Data','eDate','date',today())+f('Início','eStart','time')+f('Fim','eEnd','time')+f('Motivo','eReason','text','Bloqueado')+`<button class="btn red" onclick="saveBlock()">Bloquear</button>`}if(t=='messages'){title='Mensagens WhatsApp';let m=db.biz.messages;b=area('Aniversário','msgBirthday',m.birthday)+area('Agendamento','msgSchedule',m.schedule)+area('Confirmação','msgConfirm',m.confirm)+area('Lembrete','msgReminder',m.reminder)+area('Cobrança','msgCharge',m.charge)+area('Cliente faltante','msgAbsent',m.absent||'Olá {cliente}, sentimos sua falta no horário de {data} às {hora}, para {servicos}. Se quiser remarcar, estamos à disposição.')+area('Promoções','msgPromo',m.promo)+`<button class="btn" onclick="saveMessages()">Salvar</button><p class="small">Variáveis: {cliente}, {data}, {hora}, {servicos}, {valor}, {historico}</p>`}if(t=='receipt'){title='Recibo';b=sel('Cliente','eClient',db.clients.map(c=>({v:c.id,t:c.name})))+f('Descrição','eDesc','text','Serviços prestados')+f('Valor','eValue')+`<button class="btn" onclick="generateReceipt()">Gerar</button>`}if(t=='user'){title='Login local';b=f('Nome','uName','text',db.users[0]?.name||'Eduardo Dudu')+f('Senha','uPass','text',db.users[0]?.pass||'1234')+`<button class="btn" onclick="saveUser()">Salvar</button>`}$('editorTitle').innerText=title;$('editorBody').innerHTML=b;if(t=='ag')setTimeout(bindAgEditor,0);if(t=='plan')renderPlanItems();if(t=='logo')logoPreview()}
+function clientHistory(cid){let ag=db.appointments.filter(a=>a.clientId==cid).map(a=>`<div class="list"><div><b>${brDate(a.date)} ${a.time}</b><div class="small">${a.service}${appointmentActionPanel(a)} • ${a.status} • ${money(a.value)}</div></div></div>`).join('')||'<p class="small">Sem atendimentos.</p>';let sales=db.sales.filter(s=>s.clientId==cid).map(s=>`<div class="list"><div><b>${s.date}</b><div class="small">${s.product} • qtd ${s.qty} • ${money(s.total)}</div></div></div>`).join('')||'<p class="small">Sem compras.</p>';let rec=db.receivables.filter(r=>r.clientId==cid&&!r.paid).map(r=>`<div class="list"><div><b>${r.desc}</b><div class="small">${r.due} • ${money(r.value)}</div></div></div>`).join('')||'<p class="small">Sem pendências.</p>';let subs=db.subs.filter(s=>s.clientId==cid).map(s=>`<div class="list"><div><b>${s.plan}</b><div class="small">Vence ${s.end} • ${(s.items||[]).map(i=>i.serviceName+' saldo '+i.qty).join(' • ')}</div></div></div>`).join('')||'<p class="small">Sem planos ativos.</p>';let c=db.clients.find(x=>x.id==cid);let hist=(c?.loyaltyHistory||[]).slice(-8).reverse().map(h=>`<div class="list"><div><b>${brDate(h.date||today())}</b><div class="small">${h.desc||'Ajuste'} • saldo ${h.after}</div></div></div>`).join('')||'<p class="small">Sem ajustes manuais.</p>';let goal=c?.loyaltyGoal||10;return `<p><span class="tag">Fidelidade ${c?.loyalty||0}/${goal}</span><span class="tag">Faltam ${Math.max(0,goal-(c?.loyalty||0))}</span><span class="tag">${c?.loyaltyOrigin=='cartao_fisico'?'Veio do cartão físico':'Sistema'}</span><span class="tag">Visitas ${c?.visits||0}</span></p><h4>Histórico fidelidade</h4>${hist}<h4>Atendimentos</h4>${ag}<h4>Produtos comprados</h4>${sales}<h4>Valores em aberto</h4>${rec}<h4>Planos ativos</h4>${subs}`}function weekHtml(){let n=['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','Sábado'];return n.map((x,i)=>{let h=db.biz.hours[i];return `<div class="field"><label>${x}</label><label><input id="hOpen${i}" type="checkbox" ${h.open?'checked':''}> Aberto</label><div class="grid2"><div><label>Abre</label><input id="hStart${i}" type="time" value="${h.start}"></div><div><label>Fecha</label><input id="hEnd${i}" type="time" value="${h.end}"></div></div><div class="grid2"><div><label>Início do almoço</label><input id="hLunch${i}" type="time" value="${h.lunch||''}"></div><div><label>Tempo do almoço</label><select id="hLunchDuration${i}"><option value="30" ${Number(h.lunchDuration||60)==30?'selected':''}>30 min</option><option value="45" ${Number(h.lunchDuration||60)==45?'selected':''}>45 min</option><option value="60" ${Number(h.lunchDuration||60)==60?'selected':''}>1 hora</option><option value="90" ${Number(h.lunchDuration||60)==90?'selected':''}>1h30</option><option value="120" ${Number(h.lunchDuration||60)==120?'selected':''}>2 horas</option></select></div></div><div class="small">O almoço aparece apenas em cor diferente na agenda, sem texto.</div></div>`}).join('')}function upsert(a,o){let i=a.findIndex(x=>x.id==o.id);if(i>=0)a[i]=o;else a.push(o)}function saveClient(i){let old=db.clients.find(x=>x.id==i)||{};let o={id:i||id(),name:$('eName').value,nickname:$('eNick').value,phone:$('ePhone').value,cpf:$('eCpf').value,birth:$('eBirth').value,obs:$('eObs').value,loyalty:Number($('eLoyalty')?.value??old.loyalty??0),loyaltyGoal:Number($('eLoyaltyGoal')?.value??old.loyaltyGoal??10),loyaltyOrigin:$('eLoyaltyOrigin')?.value||old.loyaltyOrigin||'sistema',loyaltyHistory:old.loyaltyHistory||[],visits:old.visits||0};if(!o.name)return alert('Informe nome');upsert(db.clients,o);save();nav('clientes')}function saveService(i){let o={id:i||id(),name:$('eName').value,value:num($('eValue').value),duration:Number($('eDur').value||30),loyalty:$('eLoy').value=='sim',color:$('eColor').value};if(!o.name)return alert('Informe serviço');upsert(db.services,o);save();nav('servicos')}function saveInternalUse(){let p=db.products.find(x=>x.id==$('eProduct').value);if(!p)return alert('Selecione produto');let q=num($('eQty').value||1);if(q<=0)return alert('Quantidade inválida');p.stock=Number(p.stock||0)-q;let cost=registerInternalExpense(p,q,$('eObs').value);save();alert('Uso interno registrado como despesa: '+money(cost));nav('produtos')}
+function renderDiscountConfig(){let el=$('discountConfigList');if(!el)return;el.innerHTML=(db.discountTypes||[]).map((d,i)=>`<div class="list"><div><input id="discName${i}" value="${d.name||''}" placeholder="Nome"><select id="discType${i}"><option value="valor" ${d.type=='valor'?'selected':''}>Valor R$</option><option value="percent" ${d.type=='percent'?'selected':''}>Percentual %</option></select><input id="discValue${i}" value="${d.value||0}" placeholder="Valor"></div><button class="btn red" onclick="db.discountTypes.splice(${i},1);renderDiscountConfig()">Excluir</button></div>`).join('')}
+function addDiscountType(){db.discountTypes.push({id:id(),name:'Novo desconto',type:'valor',value:0});renderDiscountConfig()}
+function saveFinanceConfig(){db.paymentFees={Pix:num($('feePix').value),Dinheiro:num($('feeDinheiro').value),Debito:num($('feeDebito').value),Credito:num($('feeCredito').value)};(db.discountTypes||[]).forEach((d,i)=>{d.name=$('discName'+i).value;d.type=$('discType'+i).value;d.value=num($('discValue'+i).value)});save();alert('Taxas e descontos salvos.');nav('config')}
+function saveProduct(i){let o={id:i||id(),name:$('eName').value,type:$('eType').value,cost:num($('eCost').value),value:num($('eValue').value),stock:num($('eStock').value),min:num($('eMin').value),commission:num($('eCom').value)};if(!o.name)return alert('Informe produto');upsert(db.products,o);save();nav('produtos')}function agSelectedServices(){let s=db.services.find(x=>x.id==$('eService')?.value),s2=db.services.find(x=>x.id==$('eService2')?.value);return [s,s2].filter(Boolean)}function agPreview(){let ss=agSelectedServices(),dur=ss.reduce((a,s)=>a+Number(s.duration||30),0),val=ss.reduce((a,s)=>a+Number(s.value||0),0);if($('agDurationPreview')){let disc=calcDiscount(num($('eValue')?.value||val),$('eDiscountType')?.value,num($('eDiscountValue')?.value),num($('eDiscountPercent')?.value));$('agDurationPreview').innerText=dur+' min • ocupa até '+($('eTime')?addMin($('eTime').value||'00:00',dur):'')+' • líquido '+money(Math.max(0,num($('eValue')?.value||val)-disc.value));}if($('eValue')&&!$('eValue').dataset.edited)$('eValue').value=val}
+function renderAgClientSelected(){let box=$('agClientSelected'),hid=$('eClient');if(!box||!hid)return;let c=db.clients.find(x=>String(x.id)==String(hid.value));if(c){box.innerHTML=`<div class="list" style="margin:8px 0;padding:12px;border:2px solid #4f8a34;border-radius:12px;background:#10200e"><div><b>Cliente selecionado: ${c.name}${c.nickname?' ('+c.nickname+')':''}</b><div class="small">${c.phone||''}${c.cpf?' • CPF '+c.cpf:''}</div></div><button class="btn light" type="button" onclick="clearAgClient();return false">Trocar</button></div>`;let inp=$('eClientSearch');if(inp)inp.value=`${c.name}${c.nickname?' ('+c.nickname+')':''}`;let fb=$('eClientFallback');if(fb)fb.value=c.id}else{box.innerHTML='';let fb=$('eClientFallback');if(fb)fb.value=''}}
+function renderAgClientResults(){let box=$('agClientResults'),inp=$('eClientSearch');if(!box||!inp)return;let q=txt(inp.value);let selected=$('eClient')?.value;if(selected&&db.clients.find(x=>String(x.id)==String(selected))){box.innerHTML='';renderAgClientSelected();return}if(!q){box.innerHTML='';renderAgClientSelected();return}let rows=db.clients.filter(c=>matchClient(c,q)).slice(0,30);box.innerHTML=rows.map(c=>`<div class="list" style="cursor:pointer;margin:6px 0;padding:12px;border:1px solid #333" onclick="selectAgClient('${c.id}');return false" onmousedown="selectAgClient('${c.id}');return false"><div><b>${c.name}${c.nickname?' ('+c.nickname+')':''}</b><div class="small">${c.phone||''}${c.cpf?' • CPF '+c.cpf:''}</div></div><button class="btn light" type="button" onclick="selectAgClient('${c.id}');return false">Selecionar</button></div>`).join('')||(q?'<p class="small">Nenhum cliente encontrado.</p>':'');}
+function selectAgClient(cid){let c=db.clients.find(x=>String(x.id)==String(cid));if(!c)return;if($('eClient'))$('eClient').value=c.id;if($('eClientSearch'))$('eClientSearch').value=`${c.name}${c.nickname?' ('+c.nickname+')':''}`;if($('agClientResults'))$('agClientResults').innerHTML='';if($('eClientFallback'))$('eClientFallback').value=c.id;renderAgClientSelected();}
+function clearAgClient(){if($('eClient'))$('eClient').value='';if($('eClientSearch'))$('eClientSearch').value='';if($('eClientFallback'))$('eClientFallback').value='';if($('agClientResults'))$('agClientResults').innerHTML='';renderAgClientSelected();}
+function confirmAgClientSearch(){let q=txt($('eClientSearch')?.value||'');if(!q){renderAgClientResults();return}let rows=db.clients.filter(c=>matchClient(c,q));if(rows.length>=1)selectAgClient(rows[0].id);else renderAgClientResults();}
+function bindAgEditor(){if($('eClientSearch')){$('eClientSearch').oninput=function(){if($('eClient'))$('eClient').value='';renderAgClientResults()};renderAgClientSelected()}['eService','eService2','eTime','eDiscountType','eDiscountValue','eDiscountPercent'].forEach(x=>{if($(x))$(x).onchange=agPreview});if($('eValue'))$('eValue').oninput=()=>{$('eValue').dataset.edited='1';agPreview()};renderDiscountConfig();agPreview()}
+function agEnd(a){return addMin(a.time,Number(a.duration||30))}function findAppointmentAt(ds,time){let tm=tmin(time);return db.appointments.find(a=>a.date==ds&&a.status!='cancelado'&&tm>=tmin(a.time)&&tm<tmin(agEnd(a)))}function hasAppointmentConflict(ds,time,duration,ignoreId){let start=tmin(time),end=start+Number(duration||30);return db.appointments.some(a=>a.id!=ignoreId&&a.date==ds&&a.status!='cancelado'&&start<tmin(agEnd(a))&&end>tmin(a.time))}function openAppointment(i){let a=db.appointments.find(x=>x.id==i);if(a)edit('ag',a)}function planSummary(sub){let total=Number(sub.qtyTotal||0),used=Number(sub.qtyUsed||0),remain=Number(sub.qtyRemain||0);if(!total){(sub.items||[]).forEach(it=>{total+=Number(it.totalQty||it.qty||0);used+=Number(it.usedQty||0);remain+=Number(it.qty||0)});}return {total,used,remain}}function saveAg(i){let c=db.clients.find(x=>String(x.id)==String($('eClient').value)),s=db.services.find(x=>String(x.id)==String($('eService').value)),s2=db.services.find(x=>String(x.id)==String($('eService2').value));if(!c)return alert('Selecione um cliente na pesquisa ou na lista.');if(!s)return alert('Selecione um serviço.');let services=[s.name].concat(s2?[s2.name]:[]),dur=Number(s.duration||30)+(s2?Number(s2.duration||30):0),base=num($('eValue').value||((s.value||0)+(s2?s2.value||0:0))),disc=calcDiscount(base,$('eDiscountType')?.value,num($('eDiscountValue')?.value),num($('eDiscountPercent')?.value)),val=Math.max(0,base-disc.value),date=$('eDate').value,time=$('eTime').value;if(isBlock(date,time))return alert('Este horário está bloqueado ou fora do expediente.');if(hasAppointmentConflict(date,time,dur,i))return alert('Conflito de agenda: esse atendimento ocupa até '+addMin(time,dur)+' e cruza com outro horário já marcado.');let subId=$('eSub').value;if(subId){if(!usePlanBalance(subId,[s,s2].filter(Boolean),c.id))return;val=0;}let baseObj={clientId:c.id,serviceId:s.id,service2Id:s2?s2.id:'',subId,client:c.name,phone:c.phone,service:services.join(' + '),time,value:val,baseValue:base,discountValue:disc.value,discountDesc:disc.desc,discountType:$('eDiscountType')?.value||'',duration:dur,status:$('eStatus').value,obs:$('eObs').value};let recActive=$('eRecActive')?.checked,recCount=recActive?Math.max(1,Number($('eRecCount')?.value||1)):1,recInterval=Math.max(1,Number($('eRecInterval')?.value||1)),recType=$('eRecType')?.value||'semana',stepDays=recType=='dia'?recInterval:recInterval*7,created=0,conflicts=[],group=recActive?Date.now():'';if(i){db.appointments=db.appointments.filter(a=>String(a.id)!==String(i));db.appointments.push({id:i,...baseObj,date});created=1}else{for(let k=0;k<recCount;k++){let nd=addDaysISO(date,k*stepDays);if(isBlock(nd,time)||hasAppointmentConflict(nd,time,dur,i||'')){conflicts.push(brDate(nd));continue}db.appointments.push({id:id(),...baseObj,date:nd,recurrenceGroup:group,recurrenceIndex:k+1,recurrenceTotal:recCount,recurrenceType:recType,recurrenceInterval:recInterval});created++}}save();if(recActive)alert(created+' agendamento(s) criado(s) na recorrência.'+(conflicts.length?' Conflito/bloqueio em: '+conflicts.join(', '):''));else if(conflicts.length)alert(created+' agendamento(s) criado(s). Conflito/bloqueio em: '+conflicts.join(', '));nav('agenda')}function usePlanBalance(subId,services,clientId){let sub=db.subs.find(x=>x.id==subId&&(clientId?x.clientId==clientId:true));if(!sub)return false;let ok=true;services.forEach(s=>{if(!s)return;let item=(sub.items||[]).find(i=>i.serviceId==s.id||i.serviceName==s.name);if(!item||Number(item.qty||0)<=0)ok=false});if(!ok){alert('Plano sem saldo suficiente para este serviço.');return false}services.forEach(s=>{if(!s)return;let item=(sub.items||[]).find(i=>i.serviceId==s.id||i.serviceName==s.name);item.qty=Math.max(0,Number(item.qty||0)-1);item.usedQty=Number(item.usedQty||0)+1;if(!item.totalQty)item.totalQty=Number(item.qty||0)+Number(item.usedQty||0)});let sum=planSummary(sub);sub.qtyTotal=sum.total;sub.qtyUsed=sum.used;sub.qtyRemain=sum.remain;sub.history=sub.history||[];sub.history.push({id:id(),date:today(),type:'uso',desc:'Uso do plano no atendimento',services:services.map(x=>x.name).join(' + ')});let cl=db.clients.find(x=>x.id==sub.clientId);if(cl){cl.planHistory=cl.planHistory||[];cl.planHistory.push({date:today(),desc:'Uso do plano '+sub.plan+' em '+services.map(x=>x.name).join(' + ')})}return true}function saveSale(){let p=db.products.find(x=>x.id==$('eProduct').value);if(!p)return alert('Cadastre produto');let c=db.clients.find(x=>x.id==$('eClient').value),q=num($('eQty').value||1),total=p.value*q;p.stock=Number(p.stock||0)-q;db.sales.push({id:id(),product:p.name,productId:p.id,clientId:c?c.id:'',client:c?c.name:'',qty:q,total,date:today(),pay:$('ePay').value});if($('ePay').value=='Pendente'&&c)db.receivables.push({id:id(),clientId:c.id,client:c.name,desc:'Venda - '+p.name,value:total,originalValue:total,balance:total,due:today(),paid:false,source:'produto',paidValue:0,payments:[]});else {let pay=$('ePay').value,taxa=feeValue(total,pay),liq=netValue(total,pay);db.cash.push({id:id(),type:'entrada',desc:'Venda - '+p.name,value:liq,gross:total,fee:taxa,date:today(),pay:payLabel(pay),locked:true});if(taxa>0)db.cash.push({id:id(),type:'saida',desc:'Taxa '+payLabel(pay)+' - Venda '+p.name,value:taxa,date:today(),pay:payLabel(pay),locked:true,category:'taxa_pagamento'});}save();nav('vendas')}function saveReceivable(){let c=db.clients.find(x=>x.id==$('eClient').value);if(!c)return alert('Selecione cliente');let pay=$('ePay')?$('ePay').value:'Crediario';let term=$('eCreditTerm')?$('eCreditTerm').value:'mensal';let due=$('eDue').value||today();if(pay=='Crediario'&&(!$('eDue').value||$('eDue').value===today())){let days=term=='semanal'?7:term=='quinzenal'?15:30;due=addDaysISO(today(),days)}let value=num($('eValue').value);db.receivables.push({id:id(),clientId:c.id,client:c.name,desc:$('eDesc').value,value:value,originalValue:value,balance:value,due:due,paid:false,source:'manual',pay:pay,creditTerm:pay=='Crediario'?term:'',paidValue:0,payments:[{date:today(),value:0,pay:pay,obs:pay=='Crediario'?'Lançado no crediário':''}]});c.creditHistory=c.creditHistory||[];c.creditHistory.push({date:today(),type:'lancamento',value:value,due:due,pay:pay,term:term,balance:value,desc:$('eDesc').value});save();nav('receber')}function savePayable(){db.payables.push({id:id(),desc:$('eDesc').value,supplier:$('eSupplier').value,value:num($('eValue').value),due:$('eDue').value,status:$('eStatus').value});if($('eStatus').value=='paga')db.cash.push({id:id(),type:'saida',desc:'Conta paga - '+$('eDesc').value,value:num($('eValue').value),date:today()});save();nav('pagar')}function addPlanItem(){let s=db.services.find(x=>x.id==$('planService').value),q=Number($('planQty').value||1);if(s){planTemp.push({serviceId:s.id,serviceName:s.name,qty:q});renderPlanItems()}}function removePlanItem(i){planTemp.splice(i,1);renderPlanItems()}function renderPlanItems(){let el=$('planItems');if(!el)return;el.innerHTML=planTemp.map((it,i)=>`<div class="list"><div><b>${it.serviceName}</b><div class="small">Qtd: ${it.qty}</div></div><button class="btn red" onclick="removePlanItem(${i})">Remover</button></div>`).join('')||'<p class="small">Nenhum serviço no plano.</p>'}function savePlan(i){if(!planTemp.length)return alert('Adicione serviço');let o={id:i||id(),name:$('eName').value,value:num($('eValue').value),days:Number($('eDays').value||30),rec:$('eRec').value=='sim',items:planTemp};upsert(db.plans,o);save();nav('planos')}function sellPlan(){let c=db.clients.find(x=>x.id==$('eClient').value),p=db.plans.find(x=>x.id==$('ePlan').value);if(!c||!p)return alert('Selecione cliente e plano');let saleDate=$('eStart')?.value||today(),pay=$('ePay').value,start=saleDate,end=$('eEnd')?.value||addDaysISO(start,p.days),formQty=Number($('eQtyTotal')?.value||0),totalQty=formQty>0?formQty:(p.items||[]).reduce((s,it)=>s+Number(it.qty||0),0);let sub={id:id(),client:c.name,clientId:c.id,plan:p.name,start,end,saleDate,pay,paymentMethod:payLabel(pay),value:num($('eValue')?.value||p.value),obs:$('eObs')?.value||'',items:JSON.parse(JSON.stringify(p.items||[])).map(it=>({...it,totalQty:Number(it.qty||0),usedQty:0,qty:Number(it.qty||0)})),qtyTotal:totalQty,qtyUsed:0,qtyRemain:totalQty,history:[{id:id(),date:saleDate,type:'venda',desc:'Venda do plano'}],lastReminderDate:''};db.subs.push(sub);db.cash.push({id:id(),type:'entrada',desc:'Venda de Plano - '+c.name+' - '+p.name,value:sub.value,date:saleDate,pay:payLabel(pay),locked:true,category:'plano_venda'});c.planHistory=c.planHistory||[];c.planHistory.push({date:saleDate,desc:'Contratou plano '+p.name+' • '+sub.paymentMethod+' • '+money(sub.value)});save();nav('planos')}function saveCash(){let gross=num($('eValue').value),pay=$('ePay').value,taxa=$('eType').value=='entrada'?feeValue(gross,pay):0,liq=$('eType').value=='entrada'?netValue(gross,pay):gross;db.cash.push({id:id(),type:$('eType').value,desc:$('eDesc').value,value:liq,gross,fee:taxa,date:today(),pay:payLabel(pay),locked:true});if(taxa>0)db.cash.push({id:id(),type:'saida',desc:'Taxa '+payLabel(pay)+' - '+$('eDesc').value,value:taxa,date:today(),pay:payLabel(pay),locked:true,category:'taxa_pagamento'});save();nav('financeiro')}function saveMessages(){db.biz.messages={birthday:$('msgBirthday').value,schedule:$('msgSchedule').value,confirm:$('msgConfirm').value,reminder:$('msgReminder').value,charge:$('msgCharge').value,absent:$('msgAbsent').value,promo:$('msgPromo').value};save();nav('config')}
+function parseClientRows(txt){let rows=[];(txt||'').replace(/\r/g,'').split(/\n/).map(x=>x.trim()).filter(Boolean).forEach(l=>{let sep=l.includes(';')?';':(l.includes('\t')?'\t':',');let p=l.split(sep).map(x=>x.trim().replace(/^"|"$/g,''));if(!p[0]||/^nome$/i.test(p[0]))return;rows.push({id:id(),name:p[0]||'',phone:(p[1]||'').replace(/[^\d+]/g,''),cpf:(p[2]||'').replace(/\D/g,''),birth:p[3]||'',obs:'',loyalty:0,visits:0})});return rows}function addImportedRows(rows){if(!rows.length)return alert('Não encontrei clientes válidos.');let add=0,skip=0;rows.forEach(r=>{let ex=db.clients.some(c=>(c.phone&&r.phone&&c.phone==r.phone)||((c.name||'').toLowerCase()==r.name.toLowerCase()));if(ex){skip++;return}db.clients.push(r);add++});save();alert(add+' clientes importados. '+skip+' duplicados ignorados.');nav('clientes')}function importCsv(){let txt=($('eCsv').value||'').trim();if(!txt)return alert('Cole a lista ou selecione arquivo.');addImportedRows(parseClientRows(txt))}function importCsvFileManual(){let inp=$('csvFile');if(!inp||!inp.files||!inp.files[0])return alert('Selecione um arquivo CSV/TXT primeiro.');let r=new FileReader();r.onload=()=>addImportedRows(parseClientRows(r.result));r.readAsText(inp.files[0],'UTF-8')}function downloadCsvModel(){let modelo='Nome,Telefone,CPF,Nascimento\nJoão da Silva,48999999999,12345678900,1990-05-10';let blob=new Blob([modelo],{type:'text/csv;charset=utf-8'});let a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='modelo_clientes_domingos.csv';a.click()}function loadLogo(ev){let file=ev.target.files[0];if(!file)return;let r=new FileReader();r.onload=()=>{db.biz.logo=r.result;save();logoPreview();alert('Logo adicionada')};r.readAsDataURL(file)}function removeLogo(){db.biz.logo='';save();logoPreview()}function logoPreview(){let e=$('logoPrev');if(e)e.innerHTML=db.biz.logo?`<div class="printBox"><img class="printLogo" src="${db.biz.logo}"></div>`:'<p class="small">Sem logo</p>'}function saveBiz(){db.biz.name=$('eName').value;db.biz.owner=$('eOwner').value;db.biz.phone=$('ePhone').value;db.biz.cnpj=$('eCnpj').value;db.biz.address=$('eAddr').value;save();nav('config')}function saveHours(){for(let i=0;i<7;i++)db.biz.hours[i]={open:$('hOpen'+i).checked,start:$('hStart'+i).value,end:$('hEnd'+i).value,lunch:$('hLunch'+i).value,lunchDuration:Number($('hLunchDuration'+i)?.value||60)};save();nav('config')}function saveBlock(){db.blocks.push({id:id(),date:$('eDate').value,start:$('eStart').value,end:$('eEnd').value,reason:$('eReason').value});save();nav('agenda')}function saveUser(){db.users[0]={...(db.users[0]||{}),name:$('uName').value,pass:$('uPass').value};save();nav('config')}function calcPrice(){let custo=priceItems.reduce((s,x)=>s+Number(x.cost||0),0),fixo=num($('prFixo').value),com=num($('prComissao').value),margem=num($('prMargem').value),tempo=num($('prTempo').value);let base=custo+fixo,min=base+(base*com/100),ideal=min/(1-margem/100),premium=ideal*1.15;$('priceResult').innerHTML=`<p><b>Produtos usados:</b> ${money(custo)}</p><p><b>Tempo:</b> ${tempo} min</p><p><b>Custo base:</b> ${money(base)}</p><p><b>Preço mínimo:</b> ${money(min)}</p><p><b>Preço ideal:</b> ${money(ideal)}</p><p><b>Preço premium:</b> ${money(premium)}</p>`}function addPriceItem(){priceItems.push({name:'Produto/insumo',cost:0});renderPriceItems()}function setPriceItem(i,k,v){priceItems[i][k]=v}function delPriceItem(i){priceItems.splice(i,1);renderPriceItems()}function renderPriceItems(){let el=$('priceItems');if(!el)return;el.innerHTML=priceItems.map((it,i)=>`<div class="field"><label>Produto usado ${i+1}</label><input value="${it.name}" onchange="setPriceItem(${i},'name',this.value)" placeholder="Nome"><input value="${it.cost}" onchange="setPriceItem(${i},'cost',this.value)" placeholder="Custo"><button class="btn red" onclick="delPriceItem(${i})">Remover</button></div>`).join('')}let agendaReturnState=null;function captureAgendaState(targetDate){let w=$('agendaWrap');agendaReturnState={date:targetDate||today(),viewMode:$('viewMode')?$('viewMode').value:'week',scrollTop:w?w.scrollTop:0,scrollLeft:w?w.scrollLeft:0};}function restoreAgendaState(){if(!agendaReturnState)return;let target=new Date((agendaReturnState.date||today())+'T00:00:00'),base=new Date(today()+'T00:00:00');weekOff=Math.round((target-base)/604800000);if($('viewMode'))$('viewMode').value=agendaReturnState.viewMode||$('viewMode').value;render();let w=$('agendaWrap');if(w){w.scrollTop=Number(agendaReturnState.scrollTop||0);w.scrollLeft=Number(agendaReturnState.scrollLeft||0);}agendaReturnState=null;}function notifyDone(msg){let box=document.createElement('div');box.textContent=msg;box.style.cssText='position:fixed;right:20px;bottom:20px;background:#1a1a1a;color:#d7f7df;border:1px solid #2f6d44;border-radius:10px;padding:9px 12px;font-size:13px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.35)';document.body.appendChild(box);setTimeout(()=>box.remove(),2500);}function finish(i){let a=db.appointments.find(x=>x.id==i);if(a)captureAgendaState(a.date);edit('finish',a)}function finishWithProduct(i){let a=db.appointments.find(x=>x.id==i);if(!a)return;let orderNo=nextOrderNo(),items=[],extra=0;
+items.push({type:'servico',name:a.service,qty:1,value:Number(a.baseValue||a.value||0),discount:Number(a.discountValue||0),total:Number(a.value||0)});
+let p=db.products.find(x=>x.id==$('eProduct').value);
+if(p){let q=num($('eQty').value||1);extra=Number(p.value||0)*q;p.stock=Number(p.stock||0)-q;items.push({type:'produto',productId:p.id,name:p.name,qty:q,value:Number(p.value||0),total:extra});db.sales.push({id:id(),orderNo,product:p.name,productId:p.id,clientId:a.clientId,client:a.client,qty:q,total:extra,date:today(),pay:'Comanda/A receber'});}
+let total=Number(a.value||0)+extra,desc='Comanda '+orderNo+' - '+_appointmentDisplayName(a)+' - '+a.service+(p?' + Produto '+p.name:'');
+a.status='finalizado';a.orderNo=orderNo;
+let order={id:id(),number:orderNo,appointmentId:a.id,clientId:a.clientId,client:a.client,phone:a.phone,date:today(),due:($('eDue')?.value||today()),items,total,baseValue:Number(a.baseValue||a.value||0)+extra,discountValue:Number(a.discountValue||0),discountDesc:a.discountDesc||'',paidValue:0,balance:total,status:'aberta',obs:($('eOrderObs')?.value||'')};
+db.orders=db.orders||[];db.orders.push(order);
+db.receivables.push({id:id(),orderNo,clientId:a.clientId,client:a.client,desc,value:total,originalValue:total,balance:total,due:order.due,paid:false,source:'comanda',paidValue:0,payments:[],orderItems:items,discountValue:order.discountValue,discountDesc:order.discountDesc});
+let c=db.clients.find(x=>x.id==a.clientId);if(c){c.visits=(c.visits||0)+1;let s1=db.services.find(x=>x.id==a.serviceId),s2=db.services.find(x=>x.id==a.service2Id);[s1,s2].filter(Boolean).forEach(sv=>{if(sv&&sv.loyalty){let before=Number(c.loyalty||0);c.loyalty=before+1;c.loyaltyHistory=c.loyaltyHistory||[];c.loyaltyHistory.push({date:today(),desc:'Ponto automático por comanda '+orderNo,before,after:c.loyalty})}});let goal=Number(c.loyaltyGoal||10);if(c.loyalty>=goal){alert(c.name+' completou '+goal+' serviços válidos. Liberar benefício/corte grátis.');c.loyalty=0}}
+alert('Comanda gerada: '+orderNo+'\nValor em aberto: '+money(total)+'\nO recebimento deve ser feito em Contas a Receber.');
+save();if(confirm('Deseja imprimir ou salvar a comanda em PDF agora?'))printOrder(orderNo);nav('agenda');setTimeout(()=>{restoreAgendaState();notifyDone('Atendimento finalizado com sucesso');},20)}function weekDates(){let d=new Date(today()+'T00:00:00');d.setDate(d.getDate()+weekOff*7);if($('viewMode')?.value=='day')return[d];let sun=new Date(d);sun.setDate(d.getDate()-d.getDay());return[0,1,2,3,4,5,6].map(i=>{let x=new Date(sun);x.setDate(sun.getDate()+i);return x})}function dstr(d){return d.toISOString().slice(0,10)}function dow(d){return['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'][d.getDay()]}function tmin(t){let p=t.split(':').map(Number);return p[0]*60+p[1]}function isBlock(ds,time){let d=new Date(ds+'T00:00:00'),h=db.biz.hours[d.getDay()],tm=tmin(time);if(!h.open)return true;if(h.start&&tm<tmin(h.start))return true;if(h.end&&tm>=tmin(h.end))return true;if(h.lunch){let ls=tmin(h.lunch),le=ls+Number(h.lunchDuration||60);if(tm>=ls&&tm<le)return true}return db.blocks.some(b=>b.date==ds&&tm>=tmin(b.start)&&tm<tmin(b.end))}function addMin(t,mn){let p=t.split(':').map(Number),h=p[0],m=p[1]+Number(mn||0);while(m>=60){h++;m-=60}return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')}function prepare(ds,time){if(isBlock(ds,time))return;let occ=findAppointmentAt(ds,time);if(occ)return openAppointment(occ.id);edit('ag',{date:ds,time})}function renderAgenda(){let dates=weekDates();$('periodo').innerText=dates.length>1?dstr(dates[0])+' a '+dstr(dates[dates.length-1]):dstr(dates[0]);$('agendaHeader').className='agendaHeader '+(dates.length==1?'day':'week');$('agendaGrid').className='agendaGrid '+(dates.length==1?'day':'week');$('agendaHeader').innerHTML='<div></div>'+dates.map(d=>{let h=db.biz.hours[d.getDay()];return `<div class="dayHead ${!h.open?'closed':''} ${dstr(d)==today()?'today':''}"><div class="n">${String(d.getDate()).padStart(2,'0')}</div><div>${dow(d)} ${!h.open?'• Fechado':''}</div></div>`}).join('');let html='';for(let h=6;h<=22;h++){['00','15','30','45'].forEach(m=>{let time=String(h).padStart(2,'0')+':'+m;html+=`<div class="time">${time}</div>`;dates.forEach(d=>{let ds=dstr(d),b=isBlock(ds,time),occ=findAppointmentAt(ds,time),ev=occ&&(occ.time==time||tmin(time)==Math.floor(tmin(occ.time)/15)*15)?occ:null,cls=b?'block':(occ?'occupied':'free'),onclick=b?'':`onclick="prepare('${ds}','${time}')"`;let evHtml='';if(ev){let mult=Math.max(1,Number(ev.duration||30)/15),height=Math.max(50,Math.round(mult*58)-8);evHtml=`<div class="event ${ev.status}" style="height:${height}px" onclick="event.stopPropagation();openAppointment('${ev.id}')"><b>${ev.client}</b><div>${ev.service}</div><small>${ev.time} - ${addMin(ev.time,ev.duration||30)} • ${ev.duration||30} min</small><div class="evActions"><button class="miniBtn" onclick="event.stopPropagation();openAppointment('${ev.id}')">Abrir</button><button class="miniBtn" onclick="event.stopPropagation();finish('${ev.id}')">Concluir</button><button class="miniBtn" onclick="event.stopPropagation();deleteAppointment('${ev.id}')">Excluir</button></div></div>`}html+=`<div class="slot ${cls}" ${onclick}>${evHtml}</div>`})})}$('agendaGrid').innerHTML=html}function deleteClient(i){let has=db.appointments.some(a=>a.clientId==i)||db.sales.some(s=>s.clientId==i)||db.receivables.some(r=>r.clientId==i);if(has&&!confirm('Este cliente possui histórico. Excluir mesmo assim?'))return;if(!has&&!confirm('Excluir cliente?'))return;if(!askDeletePassword())return alert('Senha incorreta.');db.clients=db.clients.filter(x=>x.id!=i);save()}function deleteAppointment(i){
+  let ag=db.appointments.find(x=>String(x.id)==String(i));
+  if(!ag)return;
+  let group=ag.recurrenceGroup||ag.recurrenceId||'';
+  if(group){
+    let escolha=confirm('Este agendamento faz parte de uma sequência recorrente.\n\nOK = excluir TODOS os próximos dessa recorrência\nCancelar = excluir SOMENTE este horário');
+    if(escolha){
+      let dataBase=ag.date||ag.data;
+      db.appointments=db.appointments.filter(x=>{
+        let same=(x.recurrenceGroup||x.recurrenceId||'')==group;
+        let future=String(x.date||x.data||'')>=String(dataBase||'');
+        return !(same&&future);
+      });
+    }else{
+      db.appointments=db.appointments.filter(x=>String(x.id)!=String(i));
+    }
+  }else{
+    if(!confirm('Excluir agendamento?'))return;
+    db.appointments=db.appointments.filter(x=>String(x.id)!=String(i));
+  }
+  save();
+  if(typeof render==='function')render();
+}function deleteProduct(i){if(confirm('Excluir produto?')){if(!askDeletePassword())return alert('Senha incorreta.');db.products=db.products.filter(x=>x.id!=i);save()}}function deleteService(i){let used=db.appointments.some(a=>a.serviceId==i||a.service2Id==i)||db.plans.some(p=>(p.items||[]).some(it=>it.serviceId==i));if(used&&!confirm('Serviço usado em histórico/plano. Excluir mesmo assim?'))return;if(!used&&!confirm('Excluir serviço?'))return;if(!askDeletePassword())return alert('Senha incorreta.');db.services=db.services.filter(x=>x.id!=i);save()}function deleteCash(i){if(confirm('Excluir lançamento financeiro?')){if(!askDeletePassword())return alert('Senha incorreta.');db.cash=db.cash.filter(x=>x.id!=i);save()}}function updateCash(i){let c=db.cash.find(x=>x.id==i);if(!c)return;c.type=$('eType').value;c.desc=$('eDesc').value;c.value=num($('eValue').value);c.pay=$('ePay').value;save();nav('financeiro')}function matchReceivable(r,q){if(!q)return true;let c=db.clients.find(x=>x.id==r.clientId)||{};let paymentText=(r.payments||[]).map(p=>[p.obs,p.pay,p.value,p.date].join(' ')).join(' ');let statementText=receivableStatementRows(r).map(l=>[l.tipo,l.obs,l.forma,l.data].join(' ')).join(' ');return txt([r.client,c.name,c.nickname,c.phone,r.desc,r.orderNo,r.due,r.obs,paymentText,statementText,(r.orderItems||[]).map(i=>i.name).join(' ')].join(' ')).includes(q)}function recInFilter(r){let d=new Date(r.due+'T00:00:00'),now=new Date(today()+'T00:00:00');if(recFilter=='semana'){let fim=new Date(now);fim.setDate(now.getDate()+7);return d>=now&&d<=fim}if(recFilter=='mes')return(r.due||'').slice(0,7)==today().slice(0,7);return true}function payInFilter(p){if(payFilter=='vencidas')return p.status!='paga'&&p.due<today();if(payFilter=='abertas')return p.status!='paga';return true}function cobrar(i){let r=db.receivables.find(x=>x.id==i),pend=db.receivables.filter(x=>x.clientId==r.clientId&&!x.paid),c=db.clients.find(x=>x.id==r.clientId);let total=pend.reduce((s,x)=>s+Number(x.value),0),hist=pend.map(x=>x.desc+' '+money(x.value)).join(' | ');openWhats(c?.phone,fillMsg(db.biz.messages.charge,{cliente:r.client,valor:money(total),historico:hist}))}function addReceivablePayment(r,value,obs,payMethod){value=Number(value||0);if(value<=0)return false;let pay=payMethod||prompt('Forma de pagamento: Dinheiro, Pix, Debito ou Credito','Pix')||'Pix';pay=pay.toLowerCase().startsWith('din')?'Dinheiro':pay.toLowerCase().startsWith('deb')?'Debito':pay.toLowerCase().startsWith('cred')?'Credito':'Pix';if(!r.originalValue)r.originalValue=Number(r.value||0)+Number(r.paidValue||0);if(!r.payments)r.payments=[];let saldo=Number(r.balance!==undefined?r.balance:r.value||0);let pago=Math.min(value,saldo),taxa=feeValue(pago,pay),liquido=netValue(pago,pay);r.payments.push({date:today(),value:pago,net:liquido,fee:taxa,pay,obs:obs||'Baixa'});r.paidValue=Number(r.paidValue||0)+pago;r.balance=Math.max(0,saldo-pago);r.value=r.balance;if(r.balance<=0)r.paid=true;let ord=r.orderNo?orderByNo(r.orderNo):null;if(ord){ord.paidValue=Number(ord.paidValue||0)+pago;ord.balance=Math.max(0,Number(ord.balance||0)-pago);ord.status=ord.balance<=0?'paga':'parcial'}let cashId=id();db.cash.push({id:cashId,type:'entrada',desc:(obs||'Recebido')+' - '+(r.orderNo?('Comanda '+r.orderNo+' - '):'')+r.desc,value:liquido,gross:pago,fee:taxa,date:today(),pay:payLabel(pay),orderNo:r.orderNo||'',locked:true,receivableId:r.id});if(taxa>0)db.cash.push({id:id(),type:'saida',desc:'Taxa '+payLabel(pay)+' - '+(r.orderNo||r.desc),value:taxa,date:today(),pay:payLabel(pay),locked:true,category:'taxa_pagamento'});save();if(confirm('Recebimento lançado no caixa. Deseja imprimir ou salvar o recibo em PDF agora?')){printReceipt(r.id,(r.payments||[]).length-1)}return true}
+function markPaid(i){let r=db.receivables.find(x=>x.id==i);if(r&&addReceivablePayment(r,Number(r.balance!==undefined?r.balance:r.value||0),'Baixa total'))save()}
+function receivePartial(i){let r=db.receivables.find(x=>x.id==i);if(!r)return;let saldo=Number(r.balance!==undefined?r.balance:r.value||0);let v=num(prompt('Valor recebido parcial:',saldo));if(v<=0)return;if(addReceivablePayment(r,v,'Baixa parcial'))save()}
+function receiveClientPartial(clientId){let total=openReceivablesByClient(clientId).reduce((s,r)=>s+Number(r.balance!==undefined?r.balance:r.value||0),0);let v=num(prompt('Valor recebido do cliente:',total));if(v<=0)return;let restante=v;openReceivablesByClient(clientId).sort((a,b)=>(a.due||'').localeCompare(b.due||'')).forEach(r=>{if(restante<=0)return;let saldo=Number(r.balance!==undefined?r.balance:r.value||0);let pagar=Math.min(restante,saldo);addReceivablePayment(r,pagar,'Baixa parcial do cliente');restante-=pagar});save()}
+function receiveClientTotal(clientId){let total=openReceivablesByClient(clientId).reduce((s,r)=>s+Number(r.balance!==undefined?r.balance:r.value||0),0);if(total<=0)return;if(confirm('Baixar total em aberto deste cliente? '+money(total))){openReceivablesByClient(clientId).forEach(r=>addReceivablePayment(r,Number(r.balance!==undefined?r.balance:r.value||0),'Baixa total do cliente'));save()}}
+function openReceivablesByClient(clientId){return db.receivables.filter(r=>!r.paid&&r.clientId==clientId&&recInFilter(r))}
+function receivableHistoryHtml(r){let rows=receivableStatementRows(r).map(l=>`<tr><td>${l.tipo}</td><td>${brDate(l.data)}</td><td>${l.venc?brDate(l.venc):'-'}</td><td>${l.forma||'-'}</td><td>${l.obs||'-'}</td><td>${l.debito?money(l.debito):'-'}</td><td>${l.pagamento?money(l.pagamento):'-'}</td><td><b>${money(l.saldo||0)}</b></td></tr>`).join('');return `<div class='extrato-box'><table class='extrato-table'><thead><tr><th>Tipo</th><th>Data</th><th>Venc.</th><th>Forma</th><th>Obs</th><th>Débito</th><th>Pagamento</th><th>Saldo</th></tr></thead><tbody>${rows}</tbody></table><div class='doc-actions'><button class='btn light' onclick="receivePartial('${r.id}')">Dar baixa parcial</button><button class='btn green' onclick="markPaid('${r.id}')">Dar baixa total</button></div></div>`}
+function renderReceivables(){let q=val('receberSearch');let open=db.receivables.filter(r=>recInFilter(r)&&matchReceivable(r,q));let groups={};open.forEach(r=>{let k=r.clientId||r.client||'sem_cliente';if(!groups[k])groups[k]={clientId:r.clientId,client:r.client||'Sem cliente',items:[]};groups[k].items.push(r)});let html=Object.values(groups).map(g=>{let total=g.items.reduce((s,r)=>s+Number(r.balance!==undefined?r.balance:r.value||0),0);let hist=g.items.map(r=>`<div class="card" style="margin-top:10px;background:#101010"><b>${r.desc}</b>${receivableHistoryHtml(r)}<div style="margin-top:8px"><button class="btn light" onclick="cobrar('${r.id}')">WhatsApp</button><button class="btn light" onclick="receivePartial('${r.id}')">Baixa parcial</button><button class="btn green" onclick="markPaid('${r.id}')">Baixar total</button><button class="btn red" onclick="deleteReceivable('${r.id}')">Excluir</button></div></div>`).join('');return `<div class="card"><div class="list"><div><b>${g.client}</b><div class="small">Total em aberto: ${money(total)} • ${g.items.length} lançamento(s)</div></div><div><button class="btn light" onclick="receiveClientPartial('${g.clientId}')">Baixa parcial do cliente</button><button class="btn green" onclick="receiveClientTotal('${g.clientId}')">Baixar total do cliente</button></div></div>${hist}</div>`}).join('');$('receberList').innerHTML=html||'<p class="small">Nada em aberto.</p>'}
+
+function receivableStatementRows(r){
+  let comanda=r.orderNo?('Comanda #'+String(r.orderNo).replace('CMD-','')):'';let rows=[{tipo:'Débito',data:r.date||r.createdAt||r.due,venc:r.due,forma:'-',obs:[comanda,r.desc].filter(Boolean).join(' • '),debito:Number(r.originalValue||r.value||0),pagamento:0,saldo:Number(r.originalValue||r.value||0)}];
+  let saldo=Number(r.originalValue||r.value||0);
+  (r.payments||[]).forEach(p=>{saldo=Math.max(0,saldo-Number(p.value||0));rows.push({tipo:'Pagamento',data:p.date,venc:'',forma:payLabel(p.pay||''),obs:p.obs||'',debito:0,pagamento:Number(p.value||0),saldo});});
+  return rows;
+}
+function savePlanAdjustment(i){
+  const c=db.clients.find(x=>x.id==$('eClient').value); if(!c)return alert('Selecione o cliente');
+  const total=Number($('eQtyTotal').value||0),used=Number($('eQtyUsed').value||0),remain=Number($('eQtyRemain').value||Math.max(0,total-used));
+  const sub={id:i||id(),clientId:c.id,client:c.name,plan:$('ePlanName').value||'Plano importado',start:$('eStart').value||today(),end:$('eEnd').value||today(),value:0,items:[{serviceName:$('ePlanName').value||'Plano',qty:remain,totalQty:total,usedQty:used}],qtyTotal:total,qtyUsed:used,qtyRemain:remain,obs:$('eObs').value||''};
+  if(i){const k=db.subs.findIndex(x=>x.id==i); if(k>=0)db.subs[k]=sub; else db.subs.push(sub);} else db.subs.push(sub);
+  db.cash.push({id:id(),type:'entrada',desc:'Plano ajustado/importado manualmente - '+c.name,value:0,date:today(),pay:'Ajuste manual',locked:true,category:'plano_ajuste'});
+  save(); nav('planos');
+}
+function deleteReceivable(i){if(confirm('Excluir lançamento?')){if(!askDeletePassword())return alert('Senha incorreta.');db.receivables=db.receivables.filter(x=>x.id!=i);save()}}function markPayablePaid(i){let p=db.payables.find(x=>x.id==i);if(p){p.status='paga';db.cash.push({id:id(),type:'saida',desc:'Conta paga - '+p.desc,value:p.value,date:today()});save()}}function deletePayable(i){if(confirm('Excluir conta?')){if(!askDeletePassword())return alert('Senha incorreta.');db.payables=db.payables.filter(x=>x.id!=i);save()}}function fillMsg(t,d){return(t||'').replaceAll('{cliente}',d.cliente||'').replaceAll('{data}',d.data||'').replaceAll('{hora}',d.hora||'').replaceAll('{servicos}',d.servicos||'').replaceAll('{valor}',d.valor||'').replaceAll('{historico}',d.historico||'')}function openWhats(phone,msg){let n=String(phone||'').replace(/\D/g,'');if(!n)return alert('Cliente sem telefone.');window.open('https://wa.me/55'+n+'?text='+encodeURIComponent(msg))}function sendSchedule(i){let a=db.appointments.find(x=>x.id==i);if(a)openWhats(a.phone,fillMsg(db.biz.messages.schedule,{cliente:a.client,data:brDate(a.date),hora:a.time,servicos:servicesText(a)}))}function sendConfirm(i){let a=db.appointments.find(x=>x.id==i);if(a)openWhats(a.phone,fillMsg(db.biz.messages.confirm,{cliente:a.client,data:brDate(a.date),hora:a.time,servicos:servicesText(a)}))}function sendBirthday(i){let c=db.clients.find(x=>x.id==i);if(c)openWhats(c.phone,fillMsg(db.biz.messages.birthday,{cliente:c.name}))}function sendAbsent(i){let a=db.appointments.find(x=>x.id==i);if(!a)return;a.status='faltou';save();openWhats(a.phone,fillMsg(db.biz.messages.absent||msgDefault().absent,{cliente:a.client,data:brDate(a.date),hora:a.time,servicos:servicesText(a)}))}function loyaltyMsg(c){let goal=Number(c.loyaltyGoal||10),pts=Number(c.loyalty||0),faltam=Math.max(0,goal-pts);return `Olá, ${c.name}! Seu cartão fidelidade da Domingos Barbearia foi atualizado.
+
+Você está com ${pts} de ${goal} ponto(s).
+
+Faltam ${faltam} atendimento(s) para ganhar seu benefício.`}function sendLoyalty(i){let c=db.clients.find(x=>x.id==i);if(c)openWhats(c.phone,loyaltyMsg(c))}function addLoyalty(i,n,desc){let c=db.clients.find(x=>x.id==i);if(!c)return;let before=Number(c.loyalty||0),goal=Number(c.loyaltyGoal||10);c.loyalty=Math.max(0,before+Number(n||0));c.loyaltyHistory=c.loyaltyHistory||[];c.loyaltyHistory.push({date:today(),desc:desc||'Ajuste manual',before,after:c.loyalty});if(c.loyalty>=goal){alert(c.name+' completou '+goal+' pontos. Liberar benefício/corte grátis.');}save()}function setLoyalty(i){let c=db.clients.find(x=>x.id==i);if(!c)return;let v=prompt('Quantos pontos de fidelidade este cliente tem agora?',c.loyalty||0);if(v===null)return;let before=Number(c.loyalty||0);c.loyalty=Math.max(0,Number(v||0));c.loyaltyHistory=c.loyaltyHistory||[];c.loyaltyHistory.push({date:today(),desc:'Saldo ajustado manualmente',before,after:c.loyalty});save()}function adjustLoyaltyPrompt(i){setLoyalty(i)}function printReport(){nav('impressao');let inT=db.cash.filter(c=>c.type=='entrada').reduce((s,c)=>s+Number(c.value),0),outT=db.cash.filter(c=>c.type=='saida').reduce((s,c)=>s+Number(c.value),0);$('printArea').innerHTML=`${logoImpressao()?`<img class="printLogo" src="${logoImpressao()}">`:''}<h2>${db.biz.name}</h2><p class='small'>${empresaDados()}</p><h3>Relatório financeiro</h3><p>Entradas: ${money(inT)}</p><p>Saídas: ${money(outT)}</p><p><b>Saldo: ${money(inT-outT)}</b></p>`;setTimeout(()=>window.print(),200)}function printOpenReceivables(){nav('impressao');let rows=db.receivables.map(r=>`<tr><td>${r.client}</td><td>${brDate(r.date||r.createdAt||r.due)}</td><td>${brDate(r.due)}</td><td>${money(r.originalValue||r.value||0)}</td><td>${money(r.paidValue||0)}</td><td>${money(r.balance!==undefined?r.balance:r.value||0)}</td></tr>`).join('')||'<tr><td colspan=6>Sem lançamentos</td></tr>';$('printArea').innerHTML=`${logoImpressao()?`<img class="printLogo" src="${logoImpressao()}">`:''}<h2>${db.biz.name}</h2><p class='small'>${empresaDados()}</p><h3>Extrato de contas a receber</h3><table class='extrato-table'><thead><tr><th>Cliente</th><th>Lançamento</th><th>Venc.</th><th>Débito</th><th>Pago</th><th>Saldo</th></tr></thead><tbody>${rows}</tbody></table>`;setTimeout(()=>window.print(),200)}function generateReceipt(){let c=db.clients.find(x=>x.id==$('eClient').value);$('printArea').innerHTML=`${db.biz.logo?`<img class="printLogo" src="${db.biz.logo}">`:''}<h2>Recibo</h2><p><b>${db.biz.name}</b></p><p>Recebemos de <b>${c?.name||''}</b> o valor de <b>${money(num($('eValue').value))}</b></p><p>${$('eDesc').value}</p><p>${today()}</p>`;nav('impressao');setTimeout(()=>window.print(),200)}function countBy(arr,key){let o={};arr.forEach(x=>{let k=x[key]||'Não informado';o[k]=(o[k]||0)+1});return Object.entries(o).sort((a,b)=>b[1]-a[1])}function renderLogo(){let slot=$('logoSlot');slot.innerHTML=db.biz.logo?`<img src="${db.biz.logo}">`:'DB';$('brandSide').innerHTML=(db.biz.name||'Domingos Barbearia').replace(' ','<br>');$('wm').innerHTML=db.biz.logo?`<img src="${db.biz.logo}">`:''}
+
+
+function renderCashDocs(){
+  if(!$('cashDocsList'))return;
+  $('cashDocsList').innerHTML=(db.cash||[]).slice().reverse().map(c=>`<div class="list ${c.locked?'locked':''}"><b>${brDate(c.date)} • ${c.type} • ${money(c.value||0)}</b><span>${c.desc||''} ${c.orderNo?'• '+c.orderNo:''}<br><button class="btn light" onclick="printCashEntry('${c.id}')">PDF/Imprimir</button> ${c.locked?`<button class="btn danger" onclick="unlockCash('${c.id}')">Liberar com senha</button>`:''}</span></div>`).join('')||'<p class="small">Nenhum lançamento no caixa.</p>';
+}
+
+function renderProductSalesList(){
+  if(!$('productsSalesList'))return;
+  $('productsSalesList').innerHTML=(db.sales||[]).slice().reverse().map(v=>`<div class="list"><b>${v.product}</b><span>${brDate(v.date)} • ${v.client||''} • ${v.orderNo||''} • ${money(v.total||0)} <button class="btn danger" onclick="deleteProductSale('${v.id}')">Excluir</button></span></div>`).join('')||'<p class="small">Nenhuma venda de produto.</p>';
+}
+
+function inPeriodDate(date,start,end){if(!date)return false;return (!start||date>=start)&&(!end||date<=end)}
+function setReportDays(days){let d=new Date(today()+'T00:00:00');d.setDate(d.getDate()-Number(days||7)+1);$('reportStart').value=d.toISOString().slice(0,10);$('reportEnd').value=today();render()}
+function setReportMonth(){let m=today().slice(0,7);$('reportStart').value=m+'-01';$('reportEnd').value=today();render()}
+function openCashDetails(i){let c=db.cash.find(x=>x.id==i);if(!c)return;let ac=prompt('Digite 1 para alterar ou 2 para excluir','1');if(!ac)return;if(String(ac).trim()==='1'){edit('cashEdit',c)}else if(String(ac).trim()==='2'){deleteCash(i)}}function render(){renderLogo();renderAgenda();renderPriceItems();let inT=db.cash.filter(c=>c.type=='entrada').reduce((s,c)=>s+Number(c.value),0),outT=db.cash.filter(c=>c.type=='saida').reduce((s,c)=>s+Number(c.value),0),cashToday=db.cash.filter(c=>c.date==today()).reduce((s,c)=>s+(c.type=='entrada'?Number(c.value):-Number(c.value)),0),recOpen=db.receivables.filter(r=>!r.paid).reduce((s,r)=>s+Number(r.value),0),venc=db.receivables.filter(r=>!r.paid&&r.due<today()).length+db.payables.filter(p=>p.status!='paga'&&p.due<today()).length;$('dAg').innerText=db.appointments.filter(a=>a.date==today()).length;$('dCx').innerText=money(cashToday);$('dRec').innerText=money(recOpen);$('dVenc').innerText=venc;$('homeList').innerHTML=db.appointments.filter(a=>a.date==today()).map(a=>`<div class="list"><div><b>${a.time} — ${_agendaName(a)}</b><div class="small">${a.service} • ${money(a.value)}</div></div><div><button class="btn light" onclick='edit("ag",${JSON.stringify(a)})'>Editar</button><button class="btn green" onclick="finish('${a.id}')">Finalizar</button><button class="btn red" onclick="deleteAppointment('${a.id}')">Excluir</button><button class="btn light" onclick="sendAbsent('${a.id}')">Faltou</button></div></div>`).join('')||'<p class="small">Nenhum atendimento hoje.</p>';$('alerts').innerHTML=(db.products.filter(p=>p.min&&Number(p.stock)<=Number(p.min)).map(p=>`<div class="list"><b>Estoque baixo: ${p.name}</b></div>`).join('')+db.clients.filter(c=>c.birth&&c.birth.slice(5)==today().slice(5)).map(c=>`<div class="list"><b>Aniversariante: ${c.name}</b><button class="btn light" onclick="sendBirthday('${c.id}')">WhatsApp</button></div>`).join('')+db.appointments.filter(a=>a.status=='faltou').map(a=>`<div class="list"><b>Cliente faltante: ${_agendaName(a)}</b><button class="btn light" onclick="sendAbsent('${a.id}')">WhatsApp</button></div>`).join('')+db.subs.filter(s=>{let sum=planSummary(s);let nearUse=sum.remain<=1;let nearDate=s.end&&Math.ceil((new Date(s.end+'T00:00:00')-new Date(today()+'T00:00:00'))/86400000)<=7;let sameDay=s.lastReminderDate==today();return (nearUse||nearDate)&&!sameDay;}).map(s=>`<div class="list vertical"><div><b>Plano acabando: ${s.client}</b><div class="small">${s.plan} • restante ${planSummary(s).remain} • vence ${brDate(s.end)}</div></div><div><button class="btn light" onclick="openWhats((db.clients.find(c=>c.id==s.clientId)||{}).phone,'Olá '+s.client+', seu plano está perto de acabar.%0APlano: '+s.plan+'%0ASaldo restante: '+planSummary(s).remain+'%0AVencimento: '+brDate(s.end)+'%0APara renovar ou ajustar seu próximo horário, me chama por aqui.')">Abrir WhatsApp</button><button class="btn light" onclick="navigator.clipboard&&navigator.clipboard.writeText('Olá '+s.client+', seu plano está perto de acabar.\nPlano: '+s.plan+'\nSaldo restante: '+planSummary(s).remain+'\nVencimento: '+brDate(s.end)+'\nPara renovar ou ajustar seu próximo horário, me chama por aqui.')">Copiar mensagem</button><button class="btn" onclick="s.lastReminderDate=today();let c=db.clients.find(x=>x.id==s.clientId);if(c){c.planHistory=c.planHistory||[];c.planHistory.push({date:today(),desc:'Lembrete de plano enviado - '+s.plan});}save()">Marcar como avisado</button></div></div>`).join(''))||'<p class="small">Sem alertas.</p>';let clientQ=val('clientSearch'),clientRows=db.clients.filter(c=>matchClient(c,clientQ));if($('clientInfo'))$('clientInfo').innerText=clientRows.length+' cliente(s) encontrado(s)';$('clientList').innerHTML=clientRows.map(c=>`<div class="list vertical"><div><b>${c.name}${c.nickname?' ('+c.nickname+')':''}</b><div class="small">${c.phone||''} • fidelidade ${c.loyalty||0}/${c.loyaltyGoal||10} • visitas ${c.visits||0} ${c.loyaltyOrigin=='cartao_fisico'?'• cartão físico':''}</div></div><div class="itemActions"><button class="btn light" onclick='edit("client",${JSON.stringify(c)})'>Abrir/Editar</button><button class="btn light" onclick="sendBirthday('${c.id}')">WhatsApp</button><button class="btn red" onclick="deleteClient('${c.id}')">Excluir</button></div></div>`).join('')||'<p class="small">Nenhum cliente encontrado.</p>';let serviceQ=val('serviceSearch'),serviceRows=db.services.filter(s=>matchService(s,serviceQ));if($('serviceInfo'))$('serviceInfo').innerText=serviceRows.length+' serviço(s) encontrado(s)';$('serviceList').innerHTML=serviceRows.map(s=>`<div class="list vertical"><div><b>${s.name}</b><div class="small">${money(s.value)} • ${s.duration} min • ${s.loyalty?'fidelidade':'sem fidelidade'}</div></div><div class="itemActions"><button class="btn light" onclick='edit("service",${JSON.stringify(s)})'>Editar</button><button class="btn red" onclick="deleteService('${s.id}')">Excluir</button></div></div>`).join('')||'<p class="small">Nenhum serviço encontrado.</p>';let productQ=val('productSearch'),productRows=db.products.filter(p=>matchProduct(p,productQ));if($('productInfo'))$('productInfo').innerText=productRows.length+' produto(s) encontrado(s)';$('productList').innerHTML=productRows.map(p=>`<div class="list vertical"><div><b>${p.name}</b><div class="small">${p.type||'ambos'} • custo ${money(p.cost)} • venda ${money(p.value)} • estoque ${p.stock}</div></div><div class="itemActions"><button class="btn light" onclick='edit("product",${JSON.stringify(p)})'>Editar</button><button class="btn red" onclick="deleteProduct('${p.id}')">Excluir</button></div></div>`).join('')||'<p class="small">Nenhum produto encontrado.</p>';if($('internalUseList'))$('internalUseList').innerHTML=(db.internalUses||[]).slice().reverse().map(u=>`<div class="list"><div><b>${u.product}</b><div class="small">${brDate(u.date)} • qtd ${u.qty} • ${u.obs||''}</div></div><b>${money(u.cost)}</b></div>`).join('')||'<p class="small">Nenhum uso interno registrado.</p>';let saleQ=val('saleSearch');$('saleList').innerHTML=db.sales.filter(s=>txt([s.product,s.client,s.total,s.date,s.pay,s.orderNo].join(' ')).includes(saleQ)).map(s=>`<div class="list"><div><b>${s.product}</b><div class="small">${s.client||''} • ${brDate(s.date)} • qtd ${s.qty} • ${s.orderNo||''}</div></div><div><b>${money(s.total)}</b><button class="btn red" onclick="deleteProductSale('${s.id}')">Excluir</button></div></div>`).join('');let planQ=val('planSearch');$('planList').innerHTML=db.plans.filter(p=>txt([p.name,p.value,p.days,(p.items||[]).map(i=>i.serviceName).join(' ')].join(' ')).includes(planQ)).map(p=>`<div class="list"><div><b>${p.name}</b><div class="small">${(p.items||[]).map(i=>i.serviceName+' x'+i.qty).join(' • ')} • ${p.days} dias</div></div><div><b>${money(p.value)}</b><button class="btn light" onclick='edit("plan",${JSON.stringify(p)})'>Alterar</button></div></div>`).join('');$('subList').innerHTML=db.subs.filter(s=>txt([s.client,s.plan,s.end,s.value,(s.items||[]).map(i=>i.serviceName).join(' ')].join(' ')).includes(planQ)).map(s=>`<div class="list"><div><b>${s.client}</b><div class="small">${s.plan} • vence ${s.end} • ${(s.items||[]).map(i=>i.serviceName+' saldo '+i.qty).join(' • ')}</div></div><b>${money(s.value)}</b></div>`).join('');$('saldo').innerText=money(inT-outT);$('entradas').innerText=money(inT);$('saidas').innerText=money(outT);$('lanc').innerText=db.cash.length;let cashQ=val('cashSearch');$('cashList').innerHTML=db.cash.filter(c=>txt([c.desc,c.value,c.type,c.pay,c.date,c.status].join(' ')).includes(cashQ)).map(c=>`<div class="list appointment-click" onclick="openCashDetails('${c.id}')"><div><b>${c.desc}</b><div class="small">${brDate(c.date)} • ${c.type} • ${c.pay||''} ${c.fee?('• taxa '+money(c.fee)):''} ${c.locked?'• travado':''}</div></div><div><b>${money(c.value)}</b></div></div>`).join('');renderReceivables();let payQ=val('pagarSearch');$('pagarList').innerHTML=db.payables.filter(payInFilter).filter(p=>txt([p.desc,p.supplier,p.value,p.status,p.due,p.pay,p.date].join(' ')).includes(payQ)).map(p=>`<div class="list"><div><b>${p.desc}</b><div class="small">${p.supplier||''} • ${brDate(p.due)} • ${p.status}</div></div><div><b>${money(p.value)}</b><button class="btn green" onclick="markPayablePaid('${p.id}')">Paga</button><button class="btn red" onclick="deletePayable('${p.id}')">Excluir</button></div></div>`).join('')||'<p class="small">Nenhuma conta.</p>';$('loyaltyList').innerHTML=db.clients.map(c=>{let goal=Number(c.loyaltyGoal||10),pts=Number(c.loyalty||0),faltam=Math.max(0,goal-pts);return `<div class="card"><div class="list"><div><b>${c.name}</b><p class="small">Fidelidade ${pts}/${goal} • Faltam ${faltam} para benefício ${c.loyaltyOrigin=='cartao_fisico'?'• veio do cartão físico':''}</p><div style="height:10px;background:#222;border-radius:20px;overflow:hidden;margin-top:8px"><div style="height:100%;width:${Math.min(100,(pts/goal)*100)}%;background:var(--gold)"></div></div></div><div><button class="btn light" onclick="addLoyalty('${c.id}',1,'Ponto adicionado manualmente')">+1</button><button class="btn light" onclick="addLoyalty('${c.id}',-1,'Ponto removido manualmente')">-1</button><button class="btn light" onclick="setLoyalty('${c.id}')">Ajustar</button><button class="btn light" onclick="sendLoyalty('${c.id}')">WhatsApp</button></div></div></div>`}).join('');$('whatsQuickList').innerHTML=db.appointments.filter(a=>a.date>=today()).slice(0,30).map(a=>`<div class="list"><div><b>${_agendaName(a)}</b><div class="small">${brDate(a.date)} ${a.time} • ${a.service}</div></div><div><button class="btn light" onclick="sendSchedule('${a.id}')">Agendamento</button><button class="btn light" onclick="sendConfirm('${a.id}')">Confirmação</button></div></div>`).join('')||'<p class="small">Sem agendamentos futuros.</p>';let mm=db.biz.messages;$('whatsModels').innerHTML=Object.entries(mm).map(([k,v])=>`<p><b>${k}:</b></p><p class="small">${v}</p>`).join('');let rStart=$('reportStart')?.value||today().slice(0,7)+'-01',rEnd=$('reportEnd')?.value||today(),fin=db.appointments.filter(a=>a.status=='finalizado'&&inPeriodDate(a.date,rStart,rEnd)),periodCash=db.cash.filter(c=>inPeriodDate(c.date,rStart,rEnd)&&c.type=='entrada').reduce((s,c)=>s+Number(c.value),0),periodSales=db.sales.filter(x=>inPeriodDate(x.date,rStart,rEnd)),periodOrders=(db.orders||[]).filter(o=>inPeriodDate(o.date,rStart,rEnd));if($('reportStart')&&!$('reportStart').value)$('reportStart').value=rStart;if($('reportEnd')&&!$('reportEnd').value)$('reportEnd').value=rEnd;$('rMes').innerText=money(periodCash);$('rServs').innerText=periodOrders.length||fin.length;$('rProdutos').innerText=periodSales.reduce((s,x)=>s+Number(x.qty||0),0);let periodFees=db.cash.filter(c=>inPeriodDate(c.date,rStart,rEnd)&&c.category=='taxa_pagamento').reduce((s,c)=>s+Number(c.value||0),0),periodInternal=(db.internalUses||[]).filter(u=>inPeriodDate(u.date,rStart,rEnd)).reduce((s,u)=>s+Number(u.cost||0),0);if($('rTaxas'))$('rTaxas').innerText=money(periodFees);if($('rUsoInterno'))$('rUsoInterno').innerText=money(periodInternal);if($('rLiquido'))$('rLiquido').innerText=money(periodCash-periodFees-periodInternal);let paidRec=(db.receivables||[]).flatMap(r=>(r.payments||[]).filter(p=>Number(p.value||0)>0).map(p=>({pay:p.pay||r.pay||'Pix',value:Number(p.value||0),date:p.date}))).filter(p=>inPeriodDate(p.date,rStart,rEnd));let totalByPay=paidRec.reduce((a,p)=>(a[p.pay]=(a[p.pay]||0)+p.value,a),{});if($('rDinheiro'))$('rDinheiro').innerText=money(totalByPay.Dinheiro||0);if($('rPix'))$('rPix').innerText=money(totalByPay.Pix||0);if($('rDebito'))$('rDebito').innerText=money(totalByPay.Debito||0);if($('rCredito'))$('rCredito').innerText=money(totalByPay.Credito||0);let cred=(db.receivables||[]).filter(r=>(r.pay||'')=='Crediario'&&inPeriodDate(r.date||r.due,rStart,rEnd));if($('rCrediario'))$('rCrediario').innerText=money(cred.reduce((s,r)=>s+Number(r.originalValue||r.value||0),0));if($('rPendente'))$('rPendente').innerText=money((db.receivables||[]).filter(r=>!r.paid&&inPeriodDate(r.due||r.date,rStart,rEnd)).reduce((s,r)=>s+Number(r.balance!==undefined?r.balance:r.value||0),0));$('rTicket').innerText=money((periodOrders.length?periodOrders.length:fin.length)?periodCash/(periodOrders.length||fin.length):0);$('rTopServ').innerHTML=countBy(fin,'service').map(x=>`<div class="list"><b>${x[0]}</b><span>${x[1]}</span></div>`).join('')||'<p class="small">Sem serviços no período.</p>';$('rTopCli').innerHTML=countBy(fin,'client').map(x=>`<div class="list"><b>${x[0]}</b><span>${x[1]}</span></div>`).join('')||'<p class="small">Sem clientes no período.</p>'}function exportBackup(){let blob=new Blob([JSON.stringify(db,null,2)],{type:'application/json'});let a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='backup_domingos_v17_'+today()+'.json';a.click()}function importBackup(e){let file=e.target.files[0];if(!file)return;let r=new FileReader();r.onload=()=>{db=JSON.parse(r.result);normalize();save();alert('Backup importado e adaptado para a V17.')};r.readAsText(file)}render();
+
+/* AJUSTE PESQUISA CLIENTE + WHATSAPP */
+function _db(){ return typeof db !== 'undefined' ? db : window.db; }
+function _txt(v){ return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
+function _clientDisplayName(c){ return (c&&(c.apelido||c.nick||c.nickname||'').trim()) || (c&&c.name) || (c&&c.nome) || ''; }
+function _clientSearchText(c){ return _txt([c.name,c.nome,c.apelido,c.nick,c.nickname,c.phone,c.telefone,c.cpf].filter(Boolean).join(' ')); }
+function _serviceText(a){ return (typeof servicesText==='function'?servicesText(a):(a.service||a.servico||'serviço agendado')); }
+function _brDate(d){ return (typeof brDate==='function'?brDate(d):String(d||'').split('-').reverse().join('/')); }
+function _today(){ return (typeof today==='function'?today():(new Date()).toISOString().slice(0,10)); }
+function _save(){ if(typeof save==='function') save(); else localStorage.setItem('db',JSON.stringify(db)); }
+function _getEl(ids){ for(const id of ids){let el=document.getElementById(id); if(el) return el;} return null; }
+
+function agendaClientResults(){
+  const data=_db(); if(!data||!data.clients)return;
+  const input=_getEl(['aClientSearch','clientSearch','buscaCliente','searchClient','eClientSearch','clienteBusca','appointmentClientSearch']);
+  const box=_getEl(['aClientResults','clientResults','listaClientes','searchClientResults','eClientResults','clienteResultados','appointmentClientResults']);
+  if(!input||!box)return;
+  const q=_txt(input.value);
+  if(!q){ box.innerHTML=''; box.style.display='none'; return; }
+  const found=data.clients.filter(c=>_clientSearchText(c).includes(q)).slice(0,25);
+  box.innerHTML = found.length ? found.map(c=>`
+    <div class="list client-result" style="cursor:pointer" onclick="selectAgendaClient('${c.id}')">
+      <b>${_clientDisplayName(c)}</b>
+      <span>${c.name||c.nome||''}${(c.phone||c.telefone)?' • '+(c.phone||c.telefone):''}</span>
+    </div>`).join('') : '<div class="list"><b>Nenhum cliente encontrado</b></div>';
+  box.style.display='block';
+}
+function selectAgendaClient(id){
+  const data=_db(); if(!data||!data.clients)return;
+  const c=data.clients.find(x=>String(x.id)===String(id)); if(!c)return;
+  selectedClient=c; window.selectedClient=c;
+  ['aClientId','clientId','eClient','appointmentClientId','clienteId'].forEach(k=>{let el=document.getElementById(k); if(el) el.value=c.id;});
+  ['aClientSearch','clientSearch','buscaCliente','searchClient','eClientSearch','clienteBusca','appointmentClientSearch'].forEach(k=>{let el=document.getElementById(k); if(el) el.value=_clientDisplayName(c);});
+  ['aClientResults','clientResults','listaClientes','searchClientResults','eClientResults','clienteResultados','appointmentClientResults'].forEach(k=>{let el=document.getElementById(k); if(el){el.innerHTML=''; el.style.display='none';}});
+  ['selectedClientBox','clienteSelecionadoBox','aSelectedClient','clienteSelecionado','selectedClient'].forEach(k=>{let el=document.getElementById(k); if(el){el.innerHTML=`<div class="selected"><div><small>Cliente selecionado</small><b>${_clientDisplayName(c)}</b><div class="small">${c.name||c.nome||''}${(c.phone||c.telefone)?' • '+(c.phone||c.telefone):''}</div></div></div>`; el.style.display='block';}});
+}
+function agendaClientOk(){
+  const data=_db(); if(!data||!data.clients)return;
+  const input=_getEl(['aClientSearch','clientSearch','buscaCliente','searchClient','eClientSearch','clienteBusca','appointmentClientSearch']);
+  if(!input)return;
+  const q=_txt(input.value);
+  const found=data.clients.filter(c=>_clientSearchText(c).includes(q));
+  if(found.length) selectAgendaClient(found[0].id); else alert('Nenhum cliente encontrado.');
+}
+
+function _appointmentDisplayName(a){ return _agendaName(a); }
+function _waKey(a,type='confirmacao'){ return type+'_'+a.id; }
+function _isWaSent(a,type='confirmacao'){ const data=_db(); data.whatsappSent=data.whatsappSent||[]; return data.whatsappSent.some(x=>x.key===_waKey(a,type)); }
+function _markWaSent(a,type='confirmacao'){ const data=_db(); data.whatsappSent=data.whatsappSent||[]; const key=_waKey(a,type); if(!data.whatsappSent.some(x=>x.key===key)) data.whatsappSent.push({key,appointmentId:a.id,type,date:_today(),time:new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}); _save(); renderWhatsAppList(); }
+function _waStatusKey(a,type='confirmacao'){ return type+'_'+a.id; }
+function _waStatus(a,type='confirmacao'){ const data=_db(); data.whatsappStatus=data.whatsappStatus||{}; return data.whatsappStatus[_waStatusKey(a,type)]||'pendente'; }
+function _setWaStatus(a,status,type='confirmacao'){ const data=_db(); data.whatsappStatus=data.whatsappStatus||{}; data.whatsappStatus[_waStatusKey(a,type)]=status||'pendente'; _save(); renderWhatsAppList(); }
+function _unmarkWaSent(id,type='confirmacao'){ const data=_db(); const a=data.appointments.find(x=>String(x.id)===String(id)); if(!a)return; const key=_waKey(a,type); data.whatsappSent=(data.whatsappSent||[]).filter(x=>x.key!==key); _save(); renderWhatsAppList(); }
+function _waText(a){
+  return `Olá ${_whatsName(a)}, confirmando seu horário na Domingos Barbearia:
+
+${_serviceText(a)}
+${_brDate(a.date)} às ${a.time}.
+
+Atenciosamente,
+Domingos Barbearia`;
+}
+function openWhatsappAppointment(id){
+  const data=_db(); const a=data.appointments.find(x=>String(x.id)===String(id)); if(!a)return;
+  const phone=String(a.phone||a.telefone||'').replace(/\D/g,'');
+  const url=(phone?`https://wa.me/55${phone}?text=`:`https://wa.me/?text=`)+encodeURIComponent(_waText(a));
+  window.open(url,'_blank');
+  _markWaSent(a,'confirmacao');
+  _setWaStatus(a,'enviada','confirmacao');
+}
+function copyWhatsappAppointment(id){
+  const data=_db(); const a=data.appointments.find(x=>String(x.id)===String(id)); if(!a)return;
+  navigator.clipboard?.writeText(_waText(a));
+  _setWaStatus(a,'copiada','confirmacao');
+  alert('Mensagem copiada.');
+}
+function setWaDays(days){
+  let d=new Date(_today()+'T00:00:00'), e=new Date(_today()+'T00:00:00');
+  e.setDate(e.getDate()+Number(days||7)-1);
+  document.getElementById('waStart').value=d.toISOString().slice(0,10);
+  document.getElementById('waEnd').value=e.toISOString().slice(0,10);
+  renderWhatsAppList();
+}
+function _waDateTimeKey(a){let t=String(a.time||a.horario||'23:59');if(/^\d:\d\d/.test(t))t='0'+t;return String(a.date||a.data||'9999-12-31')+'T'+t.slice(0,5)}
+function renderWhatsAppList(){
+  const data=_db(); const box=document.getElementById('whatsappList'); if(!data||!box)return;
+  const st=(document.getElementById('waStart')?.value)||_today();
+  const en=(document.getElementById('waEnd')?.value)||_today();
+  if(document.getElementById('waStart')&&!document.getElementById('waStart').value)document.getElementById('waStart').value=st;
+  if(document.getElementById('waEnd')&&!document.getElementById('waEnd').value)document.getElementById('waEnd').value=en;
+  const list=(data.appointments||[]).filter(a=>(!a.status||!['cancelado','faltou','finalizado'].includes(String(a.status).toLowerCase()))&&(!st||a.date>=st)&&(!en||a.date<=en))
+    .sort((a,b)=>_waDateTimeKey(a).localeCompare(_waDateTimeKey(b)));
+  const dates={}; list.forEach(a=>{(dates[a.date]=dates[a.date]||[]).push(a);});
+  box.innerHTML=Object.keys(dates).sort().map(date=>`
+    <div class="card"><h3>${_brDate(date)}</h3>
+      ${dates[date].sort((a,b)=>_waDateTimeKey(a).localeCompare(_waDateTimeKey(b))).map(a=>{
+        const sent=_isWaSent(a,'confirmacao');
+        const status=_waStatus(a,'confirmacao');
+        const statusLabel=status==='enviada'?'Enviada':status==='copiada'?'Copiada':'Pendente';
+        return `<div class="list ${sent?'locked':''}">
+          <b>${a.time||''} • ${_agendaName(a)}</b>
+          <span>${_serviceText(a)} • ${statusLabel}<br>
+            <button class="btn" onclick="openWhatsappAppointment('${a.id}')">${sent?'Reenviar WhatsApp':'Enviar WhatsApp'}</button>
+            <button class="btn light" onclick="copyWhatsappAppointment('${a.id}')">Copiar mensagem</button>
+          </span>
+        </div>`;
+      }).join('')}
+    </div>`).join('') || '<div class="card"><p class="small">Nenhum agendamento para envio nesse período.</p></div>';
+}
+document.addEventListener('input',function(e){
+  if(['aClientSearch','clientSearch','buscaCliente','searchClient','eClientSearch','clienteBusca','appointmentClientSearch'].includes(e.target.id)) agendaClientResults();
+});
+document.addEventListener('click',function(e){
+  if(e.target && e.target.matches('.client-result')) return;
+});
+
+
+/* AJUSTE NOME AGENDA + CARD EXPANDIDO */
+let expandedAppointmentId = null;
+function _clientFullName(c){return (c&&(c.name||c.nome))||''}
+function _clientNick(c){return (c&&(c.apelido||c.nick||c.nickname||'').trim())||''}
+function _agendaNameFromClient(c){
+  const nick=_clientNick(c), full=_clientFullName(c);
+  if(nick && full && _txt(nick)!==_txt(full)) return `${nick} (${full})`;
+  return nick || full;
+}
+function _agendaName(a){
+  const data=_db(); const c=data&&data.clients?data.clients.find(x=>String(x.id)===String(a.clientId)):null;
+  return _agendaNameFromClient(c) || a.client || a.cliente || '';
+}
+function _whatsName(a){
+  const data=_db(); const c=data&&data.clients?data.clients.find(x=>String(x.id)===String(a.clientId)):null;
+  return _clientNick(c) || _clientFullName(c) || a.client || a.cliente || '';
+}
+function toggleAppointmentActions(id){
+  expandedAppointmentId = String(expandedAppointmentId)===String(id) ? null : id;
+  if(typeof render==='function')render();
+}
+function quickDeleteAppointment(id){
+  if(!confirm('Excluir este agendamento?'))return;
+  const data=_db();
+  data.appointments=(data.appointments||[]).filter(a=>String(a.id)!==String(id));
+  _save();
+  if(typeof render==='function')render();
+}
+function quickMarkFaltou(id){
+  const data=_db(); const a=(data.appointments||[]).find(x=>String(x.id)===String(id)); if(!a)return;
+  a.status='faltou';
+  _save();
+  if(typeof render==='function')render();
+}
+function quickFinishAppointment(id){
+  if(typeof edit==='function') return edit('finish', id);
+  const data=_db(); const a=(data.appointments||[]).find(x=>String(x.id)===String(id)); if(!a)return;
+  a.status='finalizado';
+  _save();
+  if(typeof render==='function')render();
+}
+function appointmentActionPanel(a){
+  if(String(expandedAppointmentId)!==String(a.id))return '';
+  return `<div class="appointment-actions">
+    <button class="btn danger" onclick="event.stopPropagation();quickDeleteAppointment('${a.id}')">🗑️ Excluir</button>
+    <button class="btn light" onclick="event.stopPropagation();quickMarkFaltou('${a.id}')">⚠️ Faltou</button>
+    <button class="btn green" onclick="event.stopPropagation();quickFinishAppointment('${a.id}')">✅ Concluir</button>
+    <button class="btn" onclick="event.stopPropagation();openWhatsappAppointment('${a.id}')">💬 WhatsApp</button>
+  </div>`;
+}
+
+
+document.addEventListener('click',function(e){
+  const el=e.target.closest('[data-appointment-id]');
+  if(el && !e.target.closest('button')) toggleAppointmentActions(el.getAttribute('data-appointment-id'));
+});
+
+
+/* CORREÇÃO HORÁRIO FANTASMA AO TROCAR AGENDAMENTO */
+(function(){
+  function DB(){try{return window.db||db}catch(e){return null}}
+  function saveDB(){try{if(typeof save==='function')save()}catch(e){}}
+  function validClient(ap){
+    const d=DB(); if(!d||!ap)return false;
+    if(ap.clientId && (d.clients||[]).some(c=>String(c.id)===String(ap.clientId))) return true;
+    if(ap.client || ap.cliente) return true;
+    return false;
+  }
+  window.limparAgendamentosFantasmas=function(){
+    const d=DB(); if(!d||!d.appointments)return;
+    const before=d.appointments.length;
+    d.appointments=d.appointments.filter(a=>{
+      const status=String(a.status||'').toLowerCase();
+      if(status==='cancelado') return false;
+      if(!a.date && !a.data) return false;
+      if(!a.time && !a.horario) return false;
+      if(!validClient(a)) return false;
+      return true;
+    });
+    if(d.appointments.length!==before) saveDB();
+  };
+  function hookRender(){
+    const old=window.render;
+    if(typeof old==='function'&&!old._limpaFantasma){
+      window.render=function(){
+        limparAgendamentosFantasmas();
+        return old.apply(this,arguments);
+      };
+      window.render._limpaFantasma=true;
+    }
+  }
+  function patchConflict(){
+    if(typeof window.hasAppointmentConflict==='function'&&!window.hasAppointmentConflict._editFix){
+      const old=window.hasAppointmentConflict;
+      window.hasAppointmentConflict=function(date,time,dur,ignoreId){
+        // garante que edição do próprio agendamento não bloqueie o horário antigo
+        return old.call(this,date,time,dur,ignoreId);
+      };
+      window.hasAppointmentConflict._editFix=true;
+    }
+  }
+  function patchSaveEdit(){
+    // Se existir upsert, ele já deve substituir pelo mesmo ID.
+    // Esta limpeza remove qualquer duplicado/órfão que tenha ficado do horário antigo.
+    const oldSave=window.saveAg || window.saveAppointment || window.salvarAgendamento;
+    const name=window.saveAg?'saveAg':(window.saveAppointment?'saveAppointment':(window.salvarAgendamento?'salvarAgendamento':null));
+    if(name && typeof window[name]==='function'&&!window[name]._fantasmaFix){
+      const fn=window[name];
+      window[name]=function(){
+        const d=DB();
+        const beforeIds=d&&d.appointments?d.appointments.map(a=>a.id):[];
+        const result=fn.apply(this,arguments);
+        setTimeout(()=>{
+          const data=DB();
+          if(data&&data.appointments){
+            // remove duplicados por ID, mantendo o último salvo
+            const map=new Map();
+            data.appointments.forEach(a=>map.set(String(a.id),a));
+            data.appointments=[...map.values()];
+            limparAgendamentosFantasmas();
+            saveDB();
+            if(typeof render==='function')render();
+          }
+        },80);
+        return result;
+      };
+      window[name]._fantasmaFix=true;
+    }
+  }
+  function init(){
+    limparAgendamentosFantasmas();
+    hookRender();
+    patchConflict();
+    patchSaveEdit();
+  }
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(init,300));
+  setTimeout(init,800);
+  setTimeout(init,1600);
+})();
+
+
+/* CORREÇÃO AGENDA 15 MIN + EXCLUSÃO DE RECORRÊNCIA */
+(function(){
+  function DB(){try{return window.db||db}catch(e){return null}}
+  function saveDB(){try{if(typeof save==='function')save()}catch(e){}}
+  window.limparHorariosFantasmasRecorrencia=function(){
+    const d=DB(); if(!d||!d.appointments)return;
+    const before=d.appointments.length;
+    d.appointments=d.appointments.filter(a=>{
+      if(!a.date&&!a.data)return false;
+      if(!a.time&&!a.horario)return false;
+      if(!(a.client||a.cliente||a.clientId))return false;
+      if(String(a.status||'').toLowerCase()==='cancelado')return false;
+      return true;
+    });
+    if(before!==d.appointments.length)saveDB();
+  };
+  const oldRender=window.render;
+  if(typeof oldRender==='function'&&!oldRender._agenda15fix){
+    window.render=function(){
+      limparHorariosFantasmasRecorrencia();
+      return oldRender.apply(this,arguments);
+    };
+    window.render._agenda15fix=true;
+  }
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(limparHorariosFantasmasRecorrencia,300));
+})();
+
+
+
+/* MELHORIAS WHATSAPP + AGENDAMENTO + CONTAS A RECEBER */
+(function(){
+  function dbase(){try{return window.db||db}catch(e){return null}}
+  function saveDB(){try{if(typeof save==='function')save()}catch(e){}}
+  function dayOffsetISO(n){const d=new Date(today()+'T00:00:00');d.setDate(d.getDate()+n);return d.toISOString().slice(0,10)}
+  function ensureMessages(){
+    const d=dbase(); if(!d||!d.biz)return;
+    d.biz.messages=d.biz.messages||{};
+    const keep={
+      confirmacao:d.biz.messages.confirmacao||d.biz.messages.confirm||'Olá {cliente}, confirmando seu horário: {data} às {hora}. Serviço: {servicos}. Domingos Barbearia.',
+      lembrete:d.biz.messages.lembrete||d.biz.messages.reminder||'Olá {cliente}, lembrete do seu horário em {data} às {hora}. Serviço: {servicos}.',
+      reagendamento:d.biz.messages.reagendamento||'Olá {cliente}, precisamos reagendar seu horário de {data} às {hora}. Serviço: {servicos}.',
+      cancelamento:d.biz.messages.cancelamento||'Olá {cliente}, seu horário de {data} às {hora} foi cancelado. Serviço: {servicos}.',
+      cobranca:d.biz.messages.cobranca||d.biz.messages.charge||'Olá {cliente}, consta em aberto {valor}. Pendências: {historico}',
+      aniversario:d.biz.messages.aniversario||d.biz.messages.birthday||'Olá {cliente}, feliz aniversário! 🎉',
+      plano_vencendo:d.biz.messages.plano_vencendo||'Olá {cliente}, seu plano está próximo de vencer. Procure a Domingos Barbearia.'
+    };
+    d.biz.messages={...d.biz.messages,...keep};
+  }
+  window.fillWhatsTemplate=function(t,a){return fillMsg(t,{cliente:_whatsName(a),data:brDate(a.date),hora:a.time,servicos:_serviceText(a)})}
+  window.copyText=function(txt){navigator.clipboard?.writeText(txt);alert('Mensagem copiada.');}
+  window.openWaWithText=function(phone,msg){openWhats(phone,msg)}
+  window.renderWhatsAppList=function(){
+    const d=dbase(); const box=document.getElementById('whatsQuickList'); const models=document.getElementById('whatsModels'); if(!d||!box||!models)return;
+    ensureMessages();
+    const start=today(),end=dayOffsetISO(1);
+    const list=(d.appointments||[]).filter(a=>a.date>=start&&a.date<=end&&(!a.status||!['cancelado','faltou','finalizado'].includes(String(a.status).toLowerCase()))).sort((a,b)=>(String(a.date||'').localeCompare(String(b.date||''))||String(a.time||'').localeCompare(String(b.time||''))));
+    box.innerHTML=list.map(a=>{const sent=_isWaSent(a,'confirmacao');const status=_waStatus(a,'confirmacao');const statusLabel=status==='enviada'?'Enviada':status==='copiada'?'Copiada':'Pendente';return `<div class="list vertical ${sent?'locked':''}"><div><b>${brDate(a.date)} • ${a.time} • ${_agendaName(a)}</b><div class="small">${_serviceText(a)} • ${statusLabel}</div></div><div class="itemActions"><button class="btn" onclick="openWhatsappAppointment('${a.id}')">Enviar WhatsApp</button><button class="btn light" onclick="copyWhatsappAppointment('${a.id}')">Copiar mensagem</button></div></div>`}).join('')||'<p class="small">Nenhum atendimento hoje ou amanhã.</p>';
+    const labels=[['confirmacao','Confirmação'],['lembrete','Lembrete'],['reagendamento','Reagendamento'],['cancelamento','Cancelamento'],['cobranca','Cobrança'],['aniversario','Aniversário'],['plano_vencendo','Plano vencendo']];
+    models.innerHTML=labels.map(([k,t])=>`<div class="card" style="background:#101010"><b>${t}</b><p class="small">${d.biz.messages[k]}</p><div class="itemActions"><button class="btn light" onclick="copyText(db.biz.messages['${k}'])">Copiar mensagem</button><button class="btn" onclick="openWaWithText('',db.biz.messages['${k}'])">Abrir WhatsApp</button></div></div>`).join('');
+  }
+
+  window.receiveByClient=function(clientId){
+    const d=dbase(); const list=(d.receivables||[]).filter(r=>!r.paid&&String(r.clientId||'')===String(clientId));
+    if(!list.length)return; const mode=prompt('Digite: total ou parcial','total'); if(!mode)return;
+    if(mode.toLowerCase().startsWith('t')){list.forEach(r=>markPaid(r.id)); return;}
+    const v=num(prompt('Valor parcial total recebido para este cliente:','0')); if(v<=0)return;
+    let saldo=v; list.forEach(r=>{if(saldo<=0)return; const b=Number(r.balance!==undefined?r.balance:r.value||0); const pay=Math.min(b,saldo); if(pay>0){addReceivablePayment(r,pay,'Baixa parcial do cliente'); saldo-=pay;}}); saveDB();
+  }
+
+  window.renderReceivables=function(){
+    const q=val('receberSearch');
+    const all=(db.receivables||[]).filter(r=>recInFilter(r)&&matchReceivable(r,q));
+    const groups={};
+    all.forEach(r=>{const k=r.clientId||r.client||'sem_cliente'; if(!groups[k])groups[k]={clientId:r.clientId,client:r.client||'Sem cliente',items:[]}; groups[k].items.push(r)});
+
+    const matchedClients=(db.clients||[]).filter(c=>!q||txt([c.name,c.nickname,c.phone,c.birth,c.obs,c.apelido,c.telefone].join(' ')).includes(q));
+    matchedClients.forEach(c=>{const k=c.id; if(!groups[k])groups[k]={clientId:c.id,client:c.name||'Sem nome',items:[],clientObj:c}; if(!groups[k].clientObj)groups[k].clientObj=c;});
+
+    const clientLastService=(clientId)=>{
+      const fromAppointments=(db.appointments||[]).filter(a=>String(a.clientId||'')===String(clientId)).sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))||String(b.time||'').localeCompare(String(a.time||'')))[0];
+      if(fromAppointments)return `${brDate(fromAppointments.date)} ${fromAppointments.time||''} • ${fromAppointments.service||'Atendimento'}`;
+      return 'Nenhum atendimento registrado';
+    };
+
+    $('receberList').innerHTML=Object.values(groups).map(g=>{
+      const total=g.items.reduce((s,r)=>s+Number(r.balance!==undefined?r.balance:r.value||0),0);
+      const paidTotal=g.items.reduce((s,r)=>s+Number(r.paidValue||0),0);
+      const hasOpen=g.items.some(r=>!r.paid&&Number(r.balance!==undefined?r.balance:r.value||0)>0);
+      const c=g.clientObj || (db.clients||[]).find(x=>String(x.id)===String(g.clientId));
+      const profile=c?`<div class='small'>${c.nickname?('Apelido: '+c.nickname+' • '):''}${c.phone?('Telefone: '+c.phone+' • '):''}${c.birth?('Nascimento: '+brDate(c.birth)):'Nascimento: -'}<br>Obs: ${c.obs||'-'}<br>Último atendimento: ${clientLastService(c.id)}</div>`:'';
+      const statement=g.items.length?g.items.map(r=>`<div class="card" style="margin-top:8px;background:#101010">${receivableHistoryHtml(r)}</div>`).join(''):'<p class="small" style="margin:10px 0 0">Cliente sem histórico financeiro.</p>';
+      return `<div class="card"><div class="list" onclick="this.nextElementSibling.classList.toggle('hidden')" style="cursor:pointer"><div><b>${g.client}</b><div class="small">Em aberto: ${money(total)} • Recebido: ${money(paidTotal)} • Lançamentos: ${g.items.length}</div>${profile}</div>${hasOpen?`<button class="btn green" onclick="event.stopPropagation();receiveByClient('${g.clientId||''}')">Dar baixa</button>`:''}</div><div class="hidden">${statement}</div></div>`;
+    }).join('')||'<p class="small">Nenhum cliente encontrado.</p>';
+  }
+
+  function showWaConfirmDialog(a,msg){
+    const old=document.getElementById('waConfirmOverlay'); if(old)old.remove();
+    const overlay=document.createElement('div');
+    overlay.id='waConfirmOverlay';
+    overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px;';
+    overlay.innerHTML=`<div class="card" style="max-width:560px;width:100%"><h3>Enviar mensagem de confirmação pelo WhatsApp?</h3><p class="small">${msg.replace(/\n/g,'<br>')}</p><div class="itemActions"><button class="btn" id="waSendBtn">Enviar WhatsApp</button><button class="btn light" id="waCopyBtn">Copiar mensagem</button><button class="btn light" id="waLaterBtn">Agora não</button></div></div>`;
+    document.body.appendChild(overlay);
+    document.getElementById('waSendBtn').onclick=function(){openWhats(a.phone,msg);_markWaSent(a,'confirmacao');_setWaStatus(a,'enviada','confirmacao');overlay.remove();};
+    document.getElementById('waCopyBtn').onclick=function(){navigator.clipboard?.writeText(msg);_setWaStatus(a,'copiada','confirmacao');alert('Mensagem copiada.');overlay.remove();};
+    document.getElementById('waLaterBtn').onclick=function(){overlay.remove();};
+  }
+
+  const oldSaveAg=window.saveAg;
+  if(typeof oldSaveAg==='function'&&!oldSaveAg._waConfirm){
+    window.saveAg=function(i){
+      oldSaveAg.apply(this,arguments);
+      if(i) return;
+      const d=dbase(); const a=(d.appointments||[]).slice().sort((x,y)=>String(y.id).localeCompare(String(x.id)))[0]; if(!a)return;
+      const msg=`Olá ${_whatsName(a)}, seu horário ficou agendado para ${brDate(a.date)} às ${a.time}.
+Serviço: ${_serviceText(a)}.
+Domingos Barbearia.`;
+      showWaConfirmDialog(a,msg);
+    }
+    window.saveAg._waConfirm=true;
+  }
+
+  const oldRender=window.render;
+  if(typeof oldRender==='function'&&!oldRender._extraMods){
+    window.render=function(){ const r=oldRender.apply(this,arguments); setTimeout(()=>{try{renderWhatsAppList()}catch(e){}},0); return r; }
+    window.render._extraMods=true;
+  }
+})();
+
+
+(function(){
+  const mustPass=()=>{ if(!askDeletePassword()) { alert('Senha incorreta.'); return false; } return true; };
+  const wrap=(name)=>{ const fn=window[name]; if(typeof fn!=='function'||fn._pwdWrapped)return; window[name]=function(){ if(!mustPass()) return; return fn.apply(this,arguments); }; window[name]._pwdWrapped=true; };
+  ['deleteAppointment','quickDeleteAppointment'].forEach(wrap);
+  const oldRender=window.render;
+  if(typeof oldRender==='function'&&!oldRender._searchFixAll){
+    window.render=function(){ const r=oldRender.apply(this,arguments); try{ if(window.renderWhatsAppList) window.renderWhatsAppList(); }catch(e){} return r; };
+    window.render._searchFixAll=true;
+  }
+})();
+
+
+(function(){
+  function groupByPeriod(list,field,start,end,mode){
+    const m={};
+    (list||[]).forEach(x=>{const d=x[field]; if(!inPeriodDate(d,start,end)) return; const dt=new Date(d+'T00:00:00'); let k=d;
+      if(mode==='semana'){const s=new Date(dt);s.setDate(dt.getDate()-dt.getDay());k=s.toISOString().slice(0,10)}
+      if(mode==='mes'){k=d.slice(0,7)}
+      if(!m[k])m[k]=0; m[k]+=Number(x.value||x.total||1);
+    });
+    return Object.entries(m).sort((a,b)=>a[0].localeCompare(b[0]));
+  }
+  function barChart(title,rows,moneyMode){
+    const max=Math.max(1,...rows.map(r=>Number(r[1]||0)));
+    const bars=rows.map(([k,v])=>`<div class="list"><div style="min-width:92px">${k}</div><div style="flex:1;background:#222;border-radius:8px;overflow:hidden"><div style="height:14px;width:${(Number(v)/max)*100}%;background:linear-gradient(90deg,var(--gold),#ad7a14)"></div></div><b>${moneyMode?money(v):Math.round(v)}</b></div>`).join('')||'<p class="small">Sem dados no período.</p>';
+    return `<div class="moduleCard"><h3>${title}</h3>${bars}</div>`;
+  }
+  window.renderReportCharts=function(){
+    const box=$('reportCharts'); if(!box) return;
+    const start=$('reportStart')?.value||today().slice(0,7)+'-01',end=$('reportEnd')?.value||today();
+    const gran=($('reportGranularity')?.value)||'mes'; const mode=gran==='periodo'?'dia':gran;
+    const orders=(db.orders||[]).filter(o=>inPeriodDate(o.date,start,end));
+    const cashIn=(db.cash||[]).filter(c=>c.type==='entrada'&&inPeriodDate(c.date,start,end));
+    const openRec=(db.receivables||[]).filter(r=>!r.paid&&inPeriodDate(r.due||r.date,start,end));
+    const paidRec=(db.receivables||[]).flatMap(r=>(r.payments||[]).map(p=>({date:p.date,value:p.value,pay:p.pay,client:r.client||'Sem cliente'}))).filter(p=>inPeriodDate(p.date,start,end));
+    const services=(orders||[]).flatMap(o=>(o.items||[]).map(i=>({name:i.name,qty:i.qty||1})));
+    const byPay=Object.entries((paidRec).reduce((a,p)=>(a[payLabel(p.pay||'Pix')]=(a[payLabel(p.pay||'Pix')]||0)+Number(p.value||0),a),{}));
+    const byClient=Object.entries((orders).reduce((a,o)=>(a[o.client]=(a[o.client]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]).slice(0,8);
+    box.innerHTML=[
+      barChart('Faturamento',groupByPeriod(cashIn,'date',start,end,mode),true),
+      barChart('Quantidade de atendimentos',groupByPeriod(orders.map(o=>({date:o.date,value:1})),'date',start,end,mode),false),
+      barChart('Serviços mais vendidos',Object.entries(services.reduce((a,s)=>(a[s.name]=(a[s.name]||0)+Number(s.qty||1),a),{})).sort((a,b)=>b[1]-a[1]).slice(0,8),false),
+      barChart('Formas de pagamento',byPay.sort((a,b)=>b[1]-a[1]).slice(0,8),true),
+      barChart('Clientes que mais retornam',byClient,false),
+      barChart('Contas em aberto',Object.entries(openRec.reduce((a,r)=>(a[r.client||'Sem cliente']=(a[r.client||'Sem cliente']||0)+Number(r.balance!==undefined?r.balance:r.value||0),a),{})).sort((a,b)=>b[1]-a[1]).slice(0,8),true),
+      barChart('Recebimentos realizados',groupByPeriod(paidRec,'date',start,end,mode),true)
+    ].join('');
+  }
+  const oldRender=window.render;
+  if(typeof oldRender==='function'&&!oldRender._charts){window.render=function(){const r=oldRender.apply(this,arguments);setTimeout(()=>{try{renderReportCharts()}catch(e){}},0);return r};window.render._charts=true;}
+})();
