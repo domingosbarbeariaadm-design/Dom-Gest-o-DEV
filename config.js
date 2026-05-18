@@ -1,4 +1,4 @@
 window.DOM_GESTAO_CONFIG = {
-  SUPABASE_URL: "https://wlonvksvjmrmsyvamequ.supabase.co",
-  SUPABASE_ANON_KEY: "sb_publishable_2kxxq9p4wlonvksvjmrmsyvamequ_7Yb3kP5rV6dN8tQ1mZ4aC0uH9eL2fG"
+  SUPABASE_URL: "https://wlonvksvjmrrmsyvamequ.supabase.co",
+  SUPABASE_ANON_KEY: "COLE_AQUI_SUA_CHAVE_sb_publishable_COMPLETA"
 };
